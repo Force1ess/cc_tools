@@ -24,3 +24,5 @@ fastText
 models
 resource/blacklist
 cc_tools/blacklist
+resource/bin
+*empty*
