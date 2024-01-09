@@ -1,0 +1,7 @@
+parquet
+.vscode
+target
+tmp
+__pycache__
+models
+blacklist

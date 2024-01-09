@@ -1,0 +1,4 @@
+{
+  "exclude": ["**/*","./tmp"],
+  "include": ["cc_net"]
+}
