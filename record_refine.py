@@ -26,9 +26,21 @@ def record_refine(outdir: str, domain_list: List[str]):
     num_records = 0
     num_files = 0
     records = []
+    def check_garbled_text(df):
+        import re
+        garbled_text = []
+        for text in df['text']:
+            if re.search(r'[^\x20-\x7E]', text):
+                garbled_text.append(text)
+        print(garbled_text)
+        return garbled_text 
 
+    count = 0
     for domain in domain_list:
         df = pd.read_parquet(domain)
+        if check_garbled_text(df):
+            count +=1
+            
         # ? shutil.rmtree(domain)
         # 删掉这个文件夹
         for lang, df_slice in df.groupby("language"):

@@ -10,7 +10,9 @@ RUSTFLAGS="-C target-cpu=native"
 
 [dependencies]
 arrow = "49.0.0"
+chardet = "0.2.4"
 clap = { version = "4.4.13", features = ["cargo"] }
+encoding_rs = "0.8.33"
 fasttext = "0.7.8"
 futures = "0.3.30"
 libc = "0.2.151"

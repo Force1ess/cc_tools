@@ -1,7 +1,9 @@
 use arrow::array::StringBuilder;
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
+use chardet::{charset2encoding, detect};
 use clap::{command, Arg};
+use encoding_rs::Encoding;
 use parquet::arrow::AsyncArrowWriter;
 use parquet::file::properties::WriterProperties;
 use rayon::prelude::*;
@@ -29,6 +31,16 @@ fn lang_detect(model: &fasttext::FastText, text: &str) -> Option<String> {
             println!("{}", text);
             None
         }
+    }
+}
+fn decode_bytes(bytes: &[u8]) -> Option<String> {
+    let det = detect(bytes);
+    let enc = charset2encoding(&det.0);
+    if let Some(encoding) = Encoding::for_label(enc.as_bytes()) {
+        let (decoded, _, _) = encoding.decode(bytes);
+        Some(decoded.into_owned())
+    } else {
+        None
     }
 }
 async fn write_todisk(
@@ -75,7 +87,7 @@ async fn records_saver(
     let mut text_builder = StringBuilder::new();
     let mut uri_builder = StringBuilder::new();
     let mut date_builder = StringBuilder::new();
-    let mut language_builder= StringBuilder::new();
+    let mut language_builder = StringBuilder::new();
 
     let w_prop: WriterProperties = WriterProperties::builder()
         .set_compression(parquet::basic::Compression::SNAPPY)
@@ -104,11 +116,11 @@ async fn records_saver(
                 Arc::new(text_builder.finish()),
                 Arc::new(uri_builder.finish()),
                 Arc::new(date_builder.finish()),
-                Arc::new(language_builder.finish())
+                Arc::new(language_builder.finish()),
             ],
         )
         .expect("Failed to create record batch");
-        let alpha = match domain.chars().next() {  
+        let alpha = match domain.chars().next() {
             Some(c) => c,
             None => {
                 continue;
@@ -154,6 +166,7 @@ mod tests {
     use crate::lang_detect;
     const ALL_REGEX: &str = r"\n+\b[A-Z]+\b\n|\n+\b[0-9]+\b\n|\b\+?\d{1,3}\s?\d{4,14}\b|\b[\w\-\.]+@([\w-]+\.)+[\w-]{2,4}\b|\b[Qq]{2}.{1,3}\d{6,10}\b";
 
+    // 测试
     #[test]
     fn regex_works() {
         let regex = regex::Regex::new(ALL_REGEX).unwrap();
@@ -187,6 +200,7 @@ mod tests {
         }
     }
 }
+
 fn wet_process(
     filename: std::path::PathBuf,
     model: Arc<fasttext::FastText>,
@@ -209,6 +223,7 @@ fn wet_process(
                     {
                         continue;
                     }
+
                     let uri = match record.header(WarcHeader::TargetURI) {
                         Some(uri) => uri.to_string(),
                         None => {
@@ -218,7 +233,7 @@ fn wet_process(
                     let domain = match Url::parse(&uri) {
                         Ok(url) => match url.domain() {
                             Some(domain) => {
-                                utf8_slice::till(domain, 32).to_string()
+                                utf8_slice::till(domain, 48).to_string()
                             }
                             None => {
                                 continue;
@@ -232,10 +247,11 @@ fn wet_process(
                         continue;
                     }
 
-                    let body = match std::str::from_utf8(record.body()) {
-                        // ? 似乎是这里
-                        Ok(body) => String::from(regex.replace_all(body, "")),
-                        Err(_) => {
+                    let body = match decode_bytes(record.body()) {
+                        Some(body) => {
+                            String::from(regex.replace_all(body.as_str(), ""))
+                        }
+                        None => {
                             continue;
                         }
                     };
@@ -325,36 +341,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let n_jobs = archives.len() / chunksize;
     for path_slice in archives.chunks(chunksize) {
         let start = Instant::now();
-        let grouped_datapoints: HashMap<String, Vec<DataPoint>> =
-            path_slice
-                .par_iter()
-                .flat_map(|x| {
-                    wet_process(
-                        x.clone(),
-                        ftm_arc.clone(),
-                        blacklist_arc.clone(),
-                    )
-                })
-                .fold(
-                    || HashMap::new(),
-                    |mut acc, dp| {
-                        acc.entry(dp.domain.clone())
-                            .or_insert_with(Vec::new)
-                            .push(dp);
-                        acc
-                    },
-                )
-                .reduce(
-                    || HashMap::new(),
-                    |mut acc, hmap| {
-                        for (key, value) in hmap {
-                            acc.entry(key)
-                                .or_insert_with(Vec::new)
-                                .extend(value);
-                        }
-                        acc
-                    },
-                );
+        let grouped_datapoints: HashMap<String, Vec<DataPoint>> = path_slice
+            .par_iter()
+            .flat_map(|x| {
+                wet_process(x.clone(), ftm_arc.clone(), blacklist_arc.clone())
+            })
+            .fold(
+                || HashMap::new(),
+                |mut acc, dp| {
+                    acc.entry(dp.domain.clone())
+                        .or_insert_with(Vec::new)
+                        .push(dp);
+                    acc
+                },
+            )
+            .reduce(
+                || HashMap::new(),
+                |mut acc, hmap| {
+                    for (key, value) in hmap {
+                        acc.entry(key).or_insert_with(Vec::new).extend(value);
+                    }
+                    acc
+                },
+            );
 
         let free_mem = get_avail_mem_gb();
         println!(
