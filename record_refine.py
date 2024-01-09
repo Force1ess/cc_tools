@@ -1,12 +1,7 @@
-import glob
 import os
 import random
-import shutil
-from pathlib import Path
-from typing import List, Tuple
+from typing import List
 
-import appdirs
-import dask.dataframe as ddf
 import pandas as pd
 import logging
 from simhash import Simhash
@@ -15,20 +10,13 @@ from sensitive_match import Trie_tree
 from tool_funcs import dir_check, pathjoin
 
 BUCKET_SIZE = 100_000
-def records_refine(outdir: str, domain_list: List[str]):
-    # model_path = pathjoin("resource/models/fasttext-langid", lang + ".arpa.bin")
-    # score_model = None
-    # if os.path.exists(model_path):
-    #     score_model = kenlm.Model(model_path)
+def record_refine(outdir: str, domain_list: List[str]):
     dir_check(pathjoin(outdir, "hash"))
     pid = str(os.getpid())
-    dst_dir = pathjoin(outdir, pid)
+    dst_dir = pathjoin(outdir, 'bucket'+pid)
     dir_check(dst_dir)
-    trie = None
     hash_file = pathjoin(dst_dir, f"{os.getpid()}.csv")
-
     trie_forest = {}
-
     badwords_path = "resource/badwords/"
     for file in os.listdir(badwords_path):
         if file.endswith(".txt"):
@@ -38,9 +26,8 @@ def records_refine(outdir: str, domain_list: List[str]):
     num_records = 0
     num_files = 0
     records = []
-    import tqdm
 
-    for domain in tqdm.tqdm(domain_list):
+    for domain in domain_list:
         df = pd.read_parquet(domain)
         # ? shutil.rmtree(domain)
         # 删掉这个文件夹
@@ -49,7 +36,7 @@ def records_refine(outdir: str, domain_list: List[str]):
                 data_slice = domain_dedup(lang, df_slice, trie_forest.get(lang, None))
                 if isinstance(data_slice, pd.DataFrame):
                     records.append(data_slice)
-                num_records += len(data_slice)
+                    num_records += len(data_slice)
             except Exception as e:
                 logging.warning(f"error in {lang} {domain}: {e}")
                 

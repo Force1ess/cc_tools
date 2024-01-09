@@ -10,7 +10,7 @@ from pathlib import Path
 from archive_process import warc_process
 from path_get import (YearMonth, download_path, get_ccmain_index,
                       get_warc_path, merge_path, month_test)
-from record_refine import records_refine_rs as record_refine
+from record_refine import record_refine
 from tool_funcs import (NUM_PROCESS, args_wrapper, batchfy, blockfy, dir_check,
                         exec_command, get_path_name, pathjoin, pool_exec,
                         process_nested_dict, send_feishu, setup)
@@ -162,35 +162,14 @@ if __name__ == "__main__":
         dump_dir = args.input
         out_dir = args.output
         for alpha in os.listdir(dump_dir):
-            domains = flattened_list = [
+            domains = [
                 pathjoin(dump_dir, alpha, filename)
                 for filename in os.listdir(pathjoin(dump_dir, alpha))
             ]
             record_refine = partial(record_refine, out_dir)
             record_refine(blockfy(domains, num_process)[0])
-            # pool_exec(
-            #     record_refine, blockfy(domains, num_process), num_process=num_process
-            # )
-
-        # df = pd.read_parquet(dump_dir)
-        # lang_df = df.groupby('language')
-
-        # 也许应该多开几个queue进程
-        # manager = mp.Manager()
-        # queue = manager.Queue(maxsize=num_process*10)
-
-        # process = mp.Process(
-        #     target=get_domain_metadata, args=(dump_dir, queue, num_process)
-        # )
-        # process.start()
-
-        # record_refine = partial(record_refine, out_dir)
-
-        # process_exec(record_refine, [queue] * num_process, num_process)
-        # process.kill()
+            pool_exec(record_refine, blockfy(domains, num_process), num_process)
 
     else:
         logging.warning(f"action must be one of {actions}")
     send_feishu(f"{args} 运行完成, 耗时{(time.time() - start_time)/60}")
-
-    # profile
