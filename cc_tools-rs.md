@@ -14,22 +14,23 @@ cargo build --release
 ### [run]
 
 ```
-cargo run -- input_dir output_dir chunksize memory_bound
+cargo run -- input_dir output_dir chunksize memory_bound num_cores
 ```
 
 or
 
 ```
-./target/release/cc_tool input_dir output_dir chunksize memory_bound
+./target/release/cc_tool input_dir output_dir chunksize memory_bound num_cores
 ```
 
-example: cargo run warc_path output_path 55 50
+example: cargo run warc_path output_path 220 50 55
 
-chunksize: 每次并行处理的文件数量，建议根据内存大小设置为 (cpu核数-4) 的倍数
+chunksize: 每次并行处理的文件数量，建议根据内存大小设置为 num_cores 的倍数
 chunksize 应该尽可能的大，因为一个chunk内的数据会被合并读写
 
 memory_bound: 触发写等待内存上限，建议不能小于chunksize
 
+num_cores: 使用的核心数量，建议至少预留6个用作IO及其他事务
 ---
 
 ## 系统设计

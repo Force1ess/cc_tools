@@ -32,7 +32,7 @@ process_parser.add_argument("--input", "-i", help="待处理文件的文件夹�
 process_parser.add_argument("--output", "-o", help="输出文件的文件夹地址")
 process_parser.add_argument("--type", "-t", help="warc or wet")
 process_parser.add_argument("-n", "--num_process", help="warc: 同时处理的线程数")
-process_parser.add_argument("-c", "--chunksize", help="wet: 一个job处理的chunk数，和内存大小接近较好，应为cpu核数-8的倍数")
+process_parser.add_argument("-c", "--chunksize", help="wet: 一个job处理的chunk数，和内存大小接近较好，应为cpu核数-6的倍数")
 
 download_parser = subparsers.add_parser("download", help="下载指定path中的文件")
 download_parser.add_argument("-i", "--input", help="目标path文件")
@@ -161,14 +161,17 @@ if __name__ == "__main__":
         num_process = int(args.num_process) if args.num_process else NUM_PROCESS
         dump_dir = args.input
         out_dir = args.output
+        record_refine = partial(record_refine, out_dir)
+        domains = []
         for alpha in os.listdir(dump_dir):
-            domains = [
+            domains.extend(
                 pathjoin(dump_dir, alpha, filename)
                 for filename in os.listdir(pathjoin(dump_dir, alpha))
-            ]
-            record_refine = partial(record_refine, out_dir)
-            record_refine(blockfy(domains, num_process)[0])
-            pool_exec(record_refine, blockfy(domains, num_process), num_process)
+            )
+        domain_batchs = blockfy(domains, num_process)
+        assert len(domain_batchs) == num_process
+        assert sum([len(i) for i in domain_batchs]) == len(domains)
+        pool_exec(record_refine, domain_batchs, num_process)
 
     else:
         logging.warning(f"action must be one of {actions}")

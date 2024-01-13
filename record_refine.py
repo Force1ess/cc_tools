@@ -1,4 +1,5 @@
 import os
+import shutil
 import random
 from typing import List
 
@@ -9,13 +10,15 @@ from simhash import Simhash
 from sensitive_match import Trie_tree
 from tool_funcs import dir_check, pathjoin
 
-BUCKET_SIZE = 100_000
+# BUCKET_SIZE = 300_000
+BUCKET_SIZE = 100_0
+
+
 def record_refine(outdir: str, domain_list: List[str]):
     dir_check(pathjoin(outdir, "hash"))
     pid = str(os.getpid())
-    dst_dir = pathjoin(outdir, 'bucket'+pid)
+    dst_dir = pathjoin(outdir, "bucket" + pid)
     dir_check(dst_dir)
-    hash_file = pathjoin(dst_dir, f"{os.getpid()}.csv")
     trie_forest = {}
     badwords_path = "resource/badwords/"
     for file in os.listdir(badwords_path):
@@ -26,23 +29,11 @@ def record_refine(outdir: str, domain_list: List[str]):
     num_records = 0
     num_files = 0
     records = []
-    def check_garbled_text(df):
-        import re
-        garbled_text = []
-        for text in df['text']:
-            if re.search(r'[^\x20-\x7E]', text):
-                garbled_text.append(text)
-        print(garbled_text)
-        return garbled_text 
-
-    count = 0
+    hash = []
     for domain in domain_list:
         df = pd.read_parquet(domain)
-        if check_garbled_text(df):
-            count +=1
-            
-        # ? shutil.rmtree(domain)
-        # 删掉这个文件夹
+        # shutil.rmtree(domain)
+        # ?? 暂时够用，就不删了吧
         for lang, df_slice in df.groupby("language"):
             try:
                 data_slice = domain_dedup(lang, df_slice, trie_forest.get(lang, None))
@@ -51,23 +42,31 @@ def record_refine(outdir: str, domain_list: List[str]):
                     num_records += len(data_slice)
             except Exception as e:
                 logging.warning(f"error in {lang} {domain}: {e}")
-                
+
         if num_records > BUCKET_SIZE or domain == domain_list[-1]:
-            logging.info(f"writing {num_records} to {dst_dir}")
-            datapoints = pd.concat(records)
+            datapoints = pd.concat(records).drop("length", axis=1)
+            del records
             dst = pathjoin(dst_dir, f"{num_files:06d}.parquet")
+            logging.info(f"writing {num_records} reocrds to {dst}")
             datapoints.to_parquet(dst)
-            hash = [
-                (f"{pid}/{num_files:06d}", str(i), str(v))
-                for i, v in enumerate(
-                    datapoints["text"].apply(lambda x: Simhash(x).value)
-                )
-            ]
-            hash.sort(key=lambda x: x[2])
-            with open(hash_file, "a", buffering=128 * 1024 * 1024) as f_hash:
-                f_hash.write("".join([",".join(i) + "\n" for i in hash]))
+            hash.extend(
+                [
+                    (f"{pid}/{num_files:06d}", str(i), str(v))
+                    for i, v in enumerate(
+                        datapoints["text"].apply(lambda x: Simhash(x).value)
+                    )
+                ]
+            )
+
+            del datapoints
+            records = []
             num_files += 1
             num_records = 0
+    hash_file = pathjoin(outdir, "hash", f"{os.getpid()}.csv")
+    hash.sort(key=lambda x: x[2])
+    with open(hash_file, "w", buffering=128 * 1024 * 1024) as f_hash:
+        f_hash.write("".join([",".join(i) + "\n" for i in hash]))
+    del hash
 
 
 def domain_dedup(

@@ -245,10 +245,10 @@ fn wet_process(
                             continue;
                         }
                     };
-                    let domain = match Url::parse(&uri) {
+                    let mut domain = match Url::parse(&uri) {
                         Ok(url) => match url.domain() {
                             Some(domain) => {
-                                utf8_slice::till(domain, 96).to_string()
+                                domain.to_string()
                             }
                             None => {
                                 continue;
@@ -261,6 +261,7 @@ fn wet_process(
                     if blacklist.contains(&domain) {
                         continue;
                     }
+                    domain = utf8_slice::till(&domain, 96).to_string();
 
                     let body = match decode_bytes(record.body()) {
                         Some(body) => {
@@ -306,6 +307,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .arg(Arg::new("output_dir").required(true))
         .arg(Arg::new("chunksize").required(true))
         .arg(Arg::new("mem_bound").required(true))
+        .arg(Arg::new("num_cores").required(true))
         .get_matches();
 
     let input_dir = matches.get_one::<String>("input_dir").unwrap().to_string();
@@ -322,6 +324,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .parse()
         .unwrap();
     let num_cpus = sys_info::cpu_num().unwrap() as usize;
+    
+    let num_cores: usize = matches
+        .get_one::<String>("num_cores")
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(num_cpus>=num_cores, true);
     println!("avalable cpus: {}", num_cpus);
     let mut ft_model = fasttext::FastText::new();
     ft_model
@@ -334,10 +343,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .lines()
             .filter_map(Result::ok)
             .collect::<HashSet<String>>();
-    // 设置 Rayon 线程池的最大线程数为 CPU 核心数减去 8
+    // 设置 Rayon 线程池的最大线程数为 
     let blacklist_arc = Arc::new(blacklist);
     ThreadPoolBuilder::new()
-        .num_threads(num_cpus - 8)
+        .num_threads(num_cores)
         .build_global()
         .unwrap();
 
