@@ -8,12 +8,28 @@ from copy import deepcopy
 from functools import partial
 from pathlib import Path
 from archive_process import warc_process
-from path_get import (YearMonth, download_path, get_ccmain_index,
-                      get_warc_path, merge_path, month_test)
+from path_get import (
+    YearMonth,
+    download_path,
+    get_ccmain_index,
+    get_warc_path,
+    merge_path,
+    month_test,
+)
 from record_refine import record_refine
-from tool_funcs import (NUM_PROCESS, args_wrapper, batchfy, blockfy, dir_check,
-                        exec_command, get_path_name, pathjoin, pool_exec,
-                        process_nested_dict, send_feishu, setup)
+from tool_funcs import (
+    NUM_PROCESS,
+    args_wrapper,
+    blockfy,
+    dir_check,
+    exec_command,
+    get_path_name,
+    pathjoin,
+    pool_exec,
+    process_nested_dict,
+    send_feishu,
+    setup,
+)
 from warc_download import aria2c_download
 
 parser = argparse.ArgumentParser(description="用于CommonCrawl数据的下载与处理")
@@ -32,7 +48,9 @@ process_parser.add_argument("--input", "-i", help="待处理文件的文件夹�
 process_parser.add_argument("--output", "-o", help="输出文件的文件夹地址")
 process_parser.add_argument("--type", "-t", help="warc or wet")
 process_parser.add_argument("-n", "--num_process", help="warc: 同时处理的线程数")
-process_parser.add_argument("-c", "--chunksize", help="wet: 一个job处理的chunk数，和内存大小接近较好，应为cpu核数-6的倍数")
+process_parser.add_argument(
+    "-c", "--chunksize", help="wet: 一个job处理的chunk数，和内存大小接近较好，应为cpu核数-6的倍数"
+)
 
 download_parser = subparsers.add_parser("download", help="下载指定path中的文件")
 download_parser.add_argument("-i", "--input", help="目标path文件")
@@ -104,15 +122,16 @@ if __name__ == "__main__":
                 files.append(file_path)
             archive_process = partial(warc_process, output_dir)
             pool_exec(
-            archive_process,
-            files,
-            num_process=num_process,
-        )
+                archive_process,
+                files,
+                num_process=num_process,
+            )
         elif args.type == "wet":
             chunksize = int(args.chunksize) if args.num_process else NUM_PROCESS
-            exec_command('./resource/bin/cc_tool',
-                         [download_dir, output_dir, chunksize, chunksize//2]
-                         )
+            exec_command(
+                "./resource/bin/cc_tool",
+                [download_dir, output_dir, chunksize, chunksize // 2],
+            )
 
     elif args.action == actions[3]:
         path_file = args.input if args.input else "merged_path"
@@ -169,8 +188,8 @@ if __name__ == "__main__":
                 for filename in os.listdir(pathjoin(dump_dir, alpha))
             )
         domain_batchs = blockfy(domains, num_process)
-        assert len(domain_batchs) == num_process
-        assert sum([len(i) for i in domain_batchs]) == len(domains)
+        logging.info(f"start refine {len(domains)} domains, {num_process} processors")
+        del domains
         pool_exec(record_refine, domain_batchs, num_process)
 
     else:

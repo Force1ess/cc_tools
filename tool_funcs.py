@@ -164,14 +164,13 @@ def data_save(file_path: str, data: Any, compress: bool = True, append=True):
 def lang_detect(text: str) -> str:
     global model
     if model is None:
-        model = fasttext.load_model("./models/cc_net-language/lid.176.bin")
+        model = fasttext.load_model("resource/models/cc_net-language/lid.176.bin")
     labels, scores = model.predict(text[:1000].replace("\n", ""))
-    label = labels[0].replace("__label__", "")
     score = min(float(scores[0]), 1.0)
     if score > 0.4:
-        return label
+        return labels[0].replace("__label__", "")
     else:
-        return "unknow"
+        return 'unknow'
 
 
 def get_memory_used() -> int:

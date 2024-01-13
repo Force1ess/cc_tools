@@ -2,6 +2,7 @@ data
 archive
 cache
 error
+*json*
 log
 temp
 MAKEFILE

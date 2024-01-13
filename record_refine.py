@@ -5,17 +5,20 @@ from typing import List
 
 import pandas as pd
 import logging
+import re
 from simhash import Simhash
 
 from sensitive_match import Trie_tree
 from tool_funcs import dir_check, pathjoin
 
-# BUCKET_SIZE = 300_000
-BUCKET_SIZE = 100_0
+
+BUCKET_SIZE = 300_000
+span_regex = re.compile(r"^(\w)\1\1(10|[3-9])\s*\n")
 
 
 def record_refine(outdir: str, domain_list: List[str]):
     dir_check(pathjoin(outdir, "hash"))
+    dirty_domains = []
     pid = str(os.getpid())
     dst_dir = pathjoin(outdir, "bucket" + pid)
     dir_check(dst_dir)
@@ -32,16 +35,20 @@ def record_refine(outdir: str, domain_list: List[str]):
     hash = []
     for domain in domain_list:
         df = pd.read_parquet(domain)
+        domain_name = domain.split("/")[-1]
         # shutil.rmtree(domain)
         # ?? 暂时够用，就不删了吧
         for lang, df_slice in df.groupby("language"):
             try:
                 data_slice = domain_dedup(lang, df_slice, trie_forest.get(lang, None))
                 if isinstance(data_slice, pd.DataFrame):
+                    data_slice["domain"] = domain_name
                     records.append(data_slice)
                     num_records += len(data_slice)
+                else:
+                    dirty_domains.append(domain_name)
             except Exception as e:
-                logging.warning(f"error in {lang} {domain}: {e}")
+                logging.warning(f"error in {lang} {domain_name}: {e}")
 
         if num_records > BUCKET_SIZE or domain == domain_list[-1]:
             datapoints = pd.concat(records).drop("length", axis=1)
@@ -62,10 +69,13 @@ def record_refine(outdir: str, domain_list: List[str]):
             records = []
             num_files += 1
             num_records = 0
+    logging.info(f"refine finished, start saving hash")
     hash_file = pathjoin(outdir, "hash", f"{os.getpid()}.csv")
     hash.sort(key=lambda x: x[2])
     with open(hash_file, "w", buffering=128 * 1024 * 1024) as f_hash:
         f_hash.write("".join([",".join(i) + "\n" for i in hash]))
+    with open(pathjoin(outdir, "dirty_domains", f"{os.getpid()}.txt"), "w") as f:
+        f.write(''.join([i + '\n' for i in dirty_domains]))
     del hash
 
 
@@ -189,13 +199,28 @@ def domain_dedup(
                 if datapoints[content_id]["length"] < min_textlen:
                     del_idxs.add(content_id)
             break
-    # TODO 平均段长度
     datapoints = pd.DataFrame(datapoints)
+    datapoints = datapoints.loc[
+        # 平均段长度小于10
+        datapoints["text"].apply(
+            lambda x: sum([len(i) for i in x])/len(x) > 10
+        )
+    ]
     datapoints["text"] = (
         datapoints["text"].apply(lambda x: "\n".join(x)).astype("string")
     )
     if sens_count != 0:
-        datapoints = datapoints[datapoints["text"].apply(trie_tree.query)]
+        datapoints = datapoints.loc[
+            datapoints["text"].apply(
+                lambda x: not pattern.match(x[:100]) and trie_tree.query(x)
+            )
+        ]
+    else:
+        datapoints = datapoints.loc[
+            datapoints["text"].apply(lambda x: not span_regex.match(x[:100]))
+        ]
+    if len(datapoints) / orig_len < 0.6:
+        return []
 
     return datapoints
 
