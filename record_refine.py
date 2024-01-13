@@ -1,6 +1,7 @@
 import os
 import shutil
 import random
+from traceback import print_exc
 from typing import List
 
 import pandas as pd
@@ -12,7 +13,7 @@ from sensitive_match import Trie_tree
 from tool_funcs import dir_check, pathjoin
 
 
-BUCKET_SIZE = 300_000
+BUCKET_SIZE = 100_000
 span_regex = re.compile(r"^(\w)\1\1(10|[3-9])\s*\n")
 
 
@@ -49,6 +50,7 @@ def record_refine(outdir: str, domain_list: List[str]):
                     dirty_domains.append(domain_name)
             except Exception as e:
                 logging.warning(f"error in {lang} {domain_name}: {e}")
+                print_exc()
 
         if num_records > BUCKET_SIZE or domain == domain_list[-1]:
             datapoints = pd.concat(records).drop("length", axis=1)
@@ -100,8 +102,8 @@ def domain_dedup(
         if sens_count / orig_len > 0.1:
             return []  # 超出10%直接丢弃
 
-    datapoints = datapoints.assign(length=datapoints["text"].apply(lambda x: len(x)))
     datapoints["text"] = datapoints["text"].apply(lambda x: x.split("\n"))
+    datapoints = datapoints.assign(length=datapoints["text"].apply(lambda x: sum([len(i) for i in x])))
     datapoints: list = datapoints.to_dict("records")
 
     min_textlen, min_blocklen = get_min_len(lang)
@@ -212,7 +214,7 @@ def domain_dedup(
     if sens_count != 0:
         datapoints = datapoints.loc[
             datapoints["text"].apply(
-                lambda x: not pattern.match(x[:100]) and trie_tree.query(x)
+                lambda x: not span_regex.match(x[:100]) and trie_tree.query(x)
             )
         ]
     else:
