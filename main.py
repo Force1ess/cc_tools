@@ -181,6 +181,8 @@ if __name__ == "__main__":
         dump_dir = args.input
         out_dir = args.output
         record_refine = partial(record_refine, out_dir)
+        dir_check(pathjoin(out_dir, "hash"))
+        dir_check(pathjoin(out_dir, "dirty_domains"))
         domains = []
         for alpha in os.listdir(dump_dir):
             domains.extend(

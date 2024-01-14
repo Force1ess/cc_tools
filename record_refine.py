@@ -13,12 +13,11 @@ from sensitive_match import Trie_tree
 from tool_funcs import dir_check, pathjoin
 
 
-BUCKET_SIZE = 100_000
+BUCKET_SIZE = 50_000
 span_regex = re.compile(r"^(\w)\1\1(10|[3-9])\s*\n")
 
 
 def record_refine(outdir: str, domain_list: List[str]):
-    dir_check(pathjoin(outdir, "hash"))
     dirty_domains = []
     pid = str(os.getpid())
     dst_dir = pathjoin(outdir, "bucket" + pid)
