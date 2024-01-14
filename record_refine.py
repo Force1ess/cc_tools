@@ -33,7 +33,6 @@ def record_refine(outdir: str, domain_list: List[str]):
     num_records = 0
     num_files = 0
     records = []
-    hash = []
     for domain in domain_list:
         df = pd.read_parquet(domain)
         domain_name = domain.split("/")[-1]
@@ -54,31 +53,34 @@ def record_refine(outdir: str, domain_list: List[str]):
 
         if num_records > BUCKET_SIZE or domain == domain_list[-1]:
             datapoints = pd.concat(records).drop("length", axis=1)
-            del records
+            records.clear()
             dst = pathjoin(dst_dir, f"{num_files:06d}.parquet")
             logging.info(f"writing {num_records} reocrds to {dst}")
             datapoints.to_parquet(dst)
-            hash.extend(
-                [
-                    (f"{pid}/{num_files:06d}", str(i), str(v))
-                    for i, v in enumerate(
-                        datapoints["text"].apply(lambda x: Simhash(x).value)
-                    )
-                ]
-            )
-
+            hash = [
+                (f"{pid}/{num_files:06d}", str(i), str(v))
+                for i, v in enumerate(
+                    datapoints["text"].apply(lambda x: Simhash(x).value)
+                )
+            ]
             del datapoints
-            records = []
+
+
+            hash_file = pathjoin(outdir, "hash", f"{os.getpid()}-{num_files:06d}.csv")
+            hash.sort(key=lambda x: x[2])
+            with open(hash_file, "w", buffering=128 * 1024 * 1024) as f_hash:
+                f_hash.write("".join([",".join(i) + "\n" for i in hash]))
+            del hash
+
+            with open(
+                pathjoin(outdir, "dirty_domains", f"{os.getpid()}-{num_files:06d}.csv"),
+                "w",
+            ) as f:
+                f.write("".join([i + "\n" for i in dirty_domains]))
+            dirty_domains.clear()
+
             num_files += 1
             num_records = 0
-    logging.info(f"refine finished, start saving hash")
-    hash_file = pathjoin(outdir, "hash", f"{os.getpid()}.csv")
-    hash.sort(key=lambda x: x[2])
-    with open(hash_file, "w", buffering=128 * 1024 * 1024) as f_hash:
-        f_hash.write("".join([",".join(i) + "\n" for i in hash]))
-    with open(pathjoin(outdir, "dirty_domains", f"{os.getpid()}.txt"), "w") as f:
-        f.write(''.join([i + '\n' for i in dirty_domains]))
-    del hash
 
 
 def domain_dedup(
@@ -103,7 +105,9 @@ def domain_dedup(
             return []  # 超出10%直接丢弃
 
     datapoints["text"] = datapoints["text"].apply(lambda x: x.split("\n"))
-    datapoints = datapoints.assign(length=datapoints["text"].apply(lambda x: sum([len(i) for i in x])))
+    datapoints = datapoints.assign(
+        length=datapoints["text"].apply(lambda x: sum([len(i) for i in x]))
+    )
     datapoints: list = datapoints.to_dict("records")
 
     min_textlen, min_blocklen = get_min_len(lang)
@@ -204,9 +208,7 @@ def domain_dedup(
     datapoints = pd.DataFrame(datapoints)
     datapoints = datapoints.loc[
         # 平均段长度小于10
-        datapoints["text"].apply(
-            lambda x: sum([len(i) for i in x])/len(x) > 10
-        )
+        datapoints["text"].apply(lambda x: sum([len(i) for i in x]) / len(x) > 10)
     ]
     datapoints["text"] = (
         datapoints["text"].apply(lambda x: "\n".join(x)).astype("string")
