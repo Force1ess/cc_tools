@@ -8,6 +8,7 @@ from copy import deepcopy
 from functools import partial
 from pathlib import Path
 from archive_process import warc_process
+from tqdm import tqdm
 from path_get import (
     YearMonth,
     download_path,
@@ -186,13 +187,11 @@ if __name__ == "__main__":
         domains = []
         for alpha in os.listdir(dump_dir):
             domains.extend(
-                pathjoin(dump_dir, alpha, filename)
-                for filename in os.listdir(pathjoin(dump_dir, alpha))
-            )
-        domain_batchs = blockfy(domains, num_process)
+                [pathjoin(dump_dir, alpha, filename)
+                for filename in os.listdir(pathjoin(dump_dir, alpha))])
+        pool_exec(record_refine, domains, num_process, chunk_size=8)
         logging.info(f"start refine {len(domains)} domains, {num_process} processors")
         del domains
-        pool_exec(record_refine, domain_batchs, num_process)
 
     else:
         logging.warning(f"action must be one of {actions}")

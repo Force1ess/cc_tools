@@ -13,73 +13,66 @@ from sensitive_match import Trie_tree
 from tool_funcs import dir_check, pathjoin
 
 
-BUCKET_SIZE = 50_000
 span_regex = re.compile(r"^(\w)\1\1(10|[3-9])\s*\n")
 
 
-def record_refine(outdir: str, domain_list: List[str]):
-    dirty_domains = []
+def record_refine(outdir: str, domain: str):
     pid = str(os.getpid())
-    dst_dir = pathjoin(outdir, "bucket" + pid)
-    dir_check(dst_dir)
-    trie_forest = {}
     badwords_path = "resource/badwords/"
-    for file in os.listdir(badwords_path):
-        if file.endswith(".txt"):
-            trie_forest[file[:-4]] = Trie_tree()
-            trie_forest[file[:-4]].load_vocab(pathjoin(badwords_path, file))
-
-    num_records = 0
-    num_files = 0
+    df = pd.read_parquet(domain)
+    domain_name = domain.split("/")[-1]
+    dir_check(pathjoin(outdir, domain_name[0]))
+    dir_check(pathjoin(outdir, "hash", pid))
+    # shutil.rmtree(domain)
+    # ?? 暂时够用，就不删了吧
     records = []
-    for domain in domain_list:
-        df = pd.read_parquet(domain)
-        domain_name = domain.split("/")[-1]
-        # shutil.rmtree(domain)
-        # ?? 暂时够用，就不删了吧
-        for lang, df_slice in df.groupby("language"):
-            try:
-                data_slice = domain_dedup(lang, df_slice, trie_forest.get(lang, None))
-                if isinstance(data_slice, pd.DataFrame):
-                    data_slice["domain"] = domain_name
-                    records.append(data_slice)
-                    num_records += len(data_slice)
-                else:
-                    dirty_domains.append(domain_name)
-            except Exception as e:
-                logging.warning(f"error in {lang} {domain_name}: {e}")
-                print_exc()
+    for lang, df_slice in df.groupby("language"):
+        trie = None
+        if os.path.exists(pathjoin(badwords_path, f"{lang}.txt")):
+            trie = Trie_tree()
+            trie.load_vocab(pathjoin(badwords_path, f"{lang}.txt"))
+        try:
+            data_slice = domain_dedup(lang, df_slice, trie)
+            if isinstance(data_slice, pd.DataFrame):
+                data_slice["domain"] = domain_name
+                records.append(data_slice)
+        except Exception as e:
+            logging.warning(f"error in {lang} {domain_name}: {e}")
+            print_exc()
+    del df
+    if records:
+        datapoints = pd.concat(records).drop("length", axis=1)
+        records.clear()
+        dst = pathjoin(outdir, domain_name[0], f"{domain_name}.parquet")
+        datapoints.to_parquet(dst)
+        hash = [
+            (f"{domain_name[0]}/{domain_name}", str(i), str(v))
+            for i, v in enumerate(datapoints["text"].apply(lambda x: Simhash(x).value))
+        ]
+        del datapoints
 
-        if num_records > BUCKET_SIZE or domain == domain_list[-1]:
-            datapoints = pd.concat(records).drop("length", axis=1)
-            records.clear()
-            dst = pathjoin(dst_dir, f"{num_files:06d}.parquet")
-            logging.info(f"writing {num_records} reocrds to {dst}")
-            datapoints.to_parquet(dst)
-            hash = [
-                (f"{pid}/{num_files:06d}", str(i), str(v))
-                for i, v in enumerate(
-                    datapoints["text"].apply(lambda x: Simhash(x).value)
-                )
-            ]
-            del datapoints
+        hash_files = [
+            pathjoin(outdir, "hash", pid, i)
+            for i in os.listdir(pathjoin(outdir, "hash", pid))
+        ]
+        # 1G的哈希
+        if len(hash_files) == 0:
+            hash_file = pathjoin(outdir, "hash", pid, "hash00.csv")
+        else:
+            hash_files.sort(key = lambda x: int(x[-6:-4]))
+            hash_file = hash_files[-1]
+            if os.path.getsize(hash_file) > 1_000_000_000:
+                hash_file = pathjoin(outdir, "hash", pid, f"hash{len(hash_files):02d}.csv")
+        with open(hash_file, "a", buffering=100 * 1024 * 1024) as f_hash:
+            f_hash.write("".join([",".join(i) + "\n" for i in hash]))
+        del hash
 
-
-            hash_file = pathjoin(outdir, "hash", f"{os.getpid()}-{num_files:06d}.csv")
-            hash.sort(key=lambda x: x[2])
-            with open(hash_file, "w", buffering=128 * 1024 * 1024) as f_hash:
-                f_hash.write("".join([",".join(i) + "\n" for i in hash]))
-            del hash
-
-            with open(
-                pathjoin(outdir, "dirty_domains", f"{os.getpid()}-{num_files:06d}.csv"),
-                "w",
-            ) as f:
-                f.write("".join([i + "\n" for i in dirty_domains]))
-            dirty_domains.clear()
-
-            num_files += 1
-            num_records = 0
+    else:
+        with open(
+            pathjoin(outdir, "dirty_domains", pid + "csv"),
+            "a",
+        ) as f:
+            f.write(domain_name + "\n")
 
 
 def domain_dedup(
