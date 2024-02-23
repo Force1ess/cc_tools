@@ -13,8 +13,6 @@ from sensitive_match import Trie_tree
 from tool_funcs import dir_check, pathjoin
 
 
-span_regex = re.compile(r"^(\w)\1\1(10|[3-9])\s*\n")
-
 
 def record_refine(outdir: str, domain: str):
     pid = str(os.getpid())
@@ -51,19 +49,8 @@ def record_refine(outdir: str, domain: str):
         ]
         del datapoints
 
-        hash_files = [
-            pathjoin(outdir, "hash", pid, i)
-            for i in os.listdir(pathjoin(outdir, "hash", pid))
-        ]
-        # 1G的哈希
-        if len(hash_files) == 0:
-            hash_file = pathjoin(outdir, "hash", pid, "hash00.csv")
-        else:
-            hash_files.sort(key = lambda x: int(x[-6:-4]))
-            hash_file = hash_files[-1]
-            if os.path.getsize(hash_file) > 1_000_000_000:
-                hash_file = pathjoin(outdir, "hash", pid, f"hash{len(hash_files):02d}.csv")
-        with open(hash_file, "a", buffering=100 * 1024 * 1024) as f_hash:
+        hash_file = pathjoin(outdir, "hash", pid+'.csv')
+        with open(hash_file, "a") as f_hash:
             f_hash.write("".join([",".join(i) + "\n" for i in hash]))
         del hash
 
@@ -255,6 +242,6 @@ def ngram_match(ngram: List[str], text: List[str], min_len: int) -> int:
 
 def get_min_len(language: str) -> tuple[int, int]:
     if language == "zh":
-        return 100, 30
+        return 150, 30
     else:
-        return 160, 50
+        return 270, 50

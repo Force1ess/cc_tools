@@ -295,6 +295,7 @@ def pool_exec(
     logging.info(f"Starting pool execution: {num_process} process")
     with ProcessPoolExecutor(
         num_process  # , initializer=mp_logger_init, initargs=[log_queue]
+        , max_tasks_per_child= 128 # 进程生命周期
     ) as executor:
         # sig_register(signal_handler)
         try:

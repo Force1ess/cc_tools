@@ -1,11 +1,14 @@
-use arrow::array::StringBuilder;
+use arrow::array::{Float32Builder, StringBuilder};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use clap::{command, Arg};
+use indicatif::ParallelProgressIterator;
 use parquet::arrow::AsyncArrowWriter;
 use parquet::file::properties::WriterProperties;
+use rand::{thread_rng, Rng};
 use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
+use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::io::BufRead;
 use std::ops::Deref;
@@ -17,11 +20,27 @@ use tokio::fs::File;
 use url::Url;
 use walkdir::WalkDir;
 use warc::{WarcHeader, WarcReader};
-
+const INVALID_CHARS: [char; 6] = ['�', 'Ã', '©', '¤', '¶', '¼'];
+use once_cell::sync::Lazy;
+static LARGE_DOMAINS: Lazy<HashMap<String, u16>> = Lazy::new(|| {
+    std::fs::read_to_string("resource/large_domain.txt")
+        .expect("Unable to read stopwords file")
+        .split('\n')
+        .map(|x| {
+            let mut line = x.split('\t');
+            (
+                line.next().unwrap().to_string(),
+                (line.next().unwrap().parse::<u32>().unwrap() / 10000) as u16,
+            )
+        })
+        .collect()
+});
+use zhconv::{zhconv, Variant};
+const ZH_VARIANTS: [&str; 2] = ["zho_Hans", "yue_Hant"];
 fn garble_check(input: String) -> Option<String> {
     let mut count = 0;
-    for ch in input.chars().take(100) {
-        if ch == '\u{FFFD}' {
+    for ch in input.chars().take(300) {
+        if INVALID_CHARS.contains(&ch) {
             count += 1;
             if count > 5 {
                 return None;
@@ -31,13 +50,13 @@ fn garble_check(input: String) -> Option<String> {
     Some(input)
 }
 
-fn lang_detect(model: &fasttext::FastText, text: &str) -> Option<String> {
-    match model.predict(text.replace("\0", "").as_str(), 1, 0.2) {
+fn lang_detect(model: &fasttext::FastText, text: &str) -> Option<(String, f32)> {
+    match model.predict(text.replace("\0", "").as_str(), 1, 0f32) {
         Ok(predictions) => match predictions.first() {
-            Some(first) =>Some(first.label.replace("__label__", "")),
-            None => None
+            Some(first) => Some((first.label.replace("__label__", ""), first.prob)),
+            None => None,
         },
-        Err(_) => None
+        Err(_) => None,
     }
 }
 
@@ -55,7 +74,7 @@ fn decode_bytes(bytes: &[u8]) -> Option<String> {
 
 async fn write_todisk(
     file_path: PathBuf,
-    record_batch: Arc<RecordBatch>,
+    record_batch: Box<RecordBatch>,
     rc_wprop: WriterProperties,
 ) {
     let file = File::create(file_path).await.unwrap();
@@ -91,6 +110,8 @@ async fn records_saver(
         Field::new("uri", DataType::Utf8, false),
         Field::new("date", DataType::Utf8, false),
         Field::new("language", DataType::Utf8, false),
+        Field::new("langscore", DataType::Float32, false),
+        Field::new("domain", DataType::Utf8, false),
     ]);
     let schema_ref = Arc::new(schema);
 
@@ -98,13 +119,13 @@ async fn records_saver(
     let mut uri_builder = StringBuilder::new();
     let mut date_builder = StringBuilder::new();
     let mut language_builder = StringBuilder::new();
+    let mut domain_builder = StringBuilder::new();
+    let mut langscore_builder = Float32Builder::new();
 
     let w_prop: WriterProperties = WriterProperties::builder()
         .set_compression(parquet::basic::Compression::SNAPPY)
         .set_write_batch_size(10240)
-        .set_statistics_enabled(
-            parquet::file::properties::EnabledStatistics::None,
-        )
+        .set_statistics_enabled(parquet::file::properties::EnabledStatistics::None)
         .set_dictionary_enabled(false)
         .build();
 
@@ -118,6 +139,8 @@ async fn records_saver(
             uri_builder.append_value(dp.uri);
             date_builder.append_value(dp.date);
             language_builder.append_value(dp.language);
+            langscore_builder.append_value(dp.langscore);
+            domain_builder.append_value(dp.domain);
         }
 
         let record = RecordBatch::try_new(
@@ -127,6 +150,8 @@ async fn records_saver(
                 Arc::new(uri_builder.finish()),
                 Arc::new(date_builder.finish()),
                 Arc::new(language_builder.finish()),
+                Arc::new(langscore_builder.finish()),
+                Arc::new(domain_builder.finish()),
             ],
         )
         .expect("Failed to create record batch");
@@ -145,11 +170,7 @@ async fn records_saver(
         if tasks.len() > fd_limit {
             let _ = tasks.pop().unwrap().await;
         }
-        let future = tokio::spawn(write_todisk(
-            file_path,
-            Arc::new(record),
-            w_prop.clone(),
-        ));
+        let future = tokio::spawn(write_todisk(file_path, Box::new(record), w_prop.clone()));
         tasks.push(future);
     }
 
@@ -168,29 +189,30 @@ struct DataPoint {
     uri: String,
     date: String,
     language: String,
+    langscore: f32,
 }
 // 全大写，全数字，电话号码，邮箱，qq
 const ALL_REGEX: &str = r"\n+[A-Z]+\n|\n+[0-9]+\n|\b\+?\d{1,3}\s?\d{4,14}\b|\b[\w\-\.]+@([\w-]+\.)+[\w-]{2,4}\b|\b[Qq]{2}.{1,3}\d{6,10}\b";
+// 使用原子组来优化性能
 #[cfg(test)]
 mod tests {
-    use crate::{lang_detect, garble_check};
-    const ALL_REGEX: &str = r"\n+\b[A-Z]+\b\n|\n+\b[0-9]+\b\n|\b\+?\d{1,3}\s?\d{4,14}\b|\b[\w\-\.]+@([\w-]+\.)+[\w-]{2,4}\b|\b[Qq]{2}.{1,3}\d{6,10}\b";
 
+    use super::*;
     // 测试
     #[test]
-    fn garble_workds(){
+    fn garble_workds() {
         let garbledtext = "Ã、�、¤Ã、�、¤Ã、�、¤Ã、�、¤Ã、�、¤Ã、�、¤Ã、�、¤Ã、�、¤Ã、�、¤";
         assert_eq!(garble_check(garbledtext.to_string()), None);
     }
 
     #[test]
     fn regex_works() {
-        let regex = regex::Regex::new(ALL_REGEX).unwrap();
-        assert_eq!(regex.is_match("qq 2304160042"), true);
-        assert_eq!(regex.is_match("\nSKLDJKLS\n"), true);
-        assert_eq!(regex.is_match("\n1293918273\n"), true);
-        assert_eq!(regex.is_match("\nmyasdasd@mail.com\n"), true);
-        assert_eq!(regex.is_match("\n+86 13800138000\n"), true);
+        let regex = Regex::new(ALL_REGEX).unwrap();
+        assert!(regex.is_match("qq 2304160042"));
+        assert!(regex.is_match("\nSKLDJKLS\n"));
+        assert!(regex.is_match("\n1293918273\n"));
+        assert!(regex.is_match("\nmyasdasd@mail.com\n"));
+        assert!(regex.is_match("\n+86 13800138000\n"));
     }
     #[test]
     fn langid_works() {
@@ -199,8 +221,8 @@ mod tests {
             .load_model("resource/models/cc_net-language/lid.176.bin")
             .unwrap();
         println!("{:?}", lang_detect(&ft_model, "くくくくhel卧槽"));
-        assert_eq!("zh", lang_detect(&ft_model, "我是中国人").unwrap());
-        assert_eq!("zh", lang_detect(&ft_model, "我是中国\0人").unwrap());
+        assert_eq!("zh", lang_detect(&ft_model, "我是中国人").unwrap().0);
+        assert_eq!("zh", lang_detect(&ft_model, "我是中国\0人").unwrap().0);
     }
     #[test]
     fn utf8_slice_works() {
@@ -221,16 +243,14 @@ fn wet_process(
     model: Arc<fasttext::FastText>,
     blacklist: Arc<HashSet<String>>,
 ) -> Vec<DataPoint> {
-    let regex = match regex::Regex::new(ALL_REGEX) {
-        Ok(r) => r,
-        Err(_) => panic!("Invalid regex"),
-    };
+    let clean_regex = Regex::new(ALL_REGEX).unwrap();
+    let mut rng = thread_rng();
     let mut records: Vec<DataPoint> = Vec::new();
     if let Ok(file) = WarcReader::from_path_gzip(filename) {
         for record in file.iter_records() {
             match record {
                 Err(err) => {
-                    println!("file reading error: {}",  err)
+                    println!("file reading error: {}", err)
                 }
                 Ok(record) => {
                     if record.warc_type() != &warc::RecordType::Conversion
@@ -245,10 +265,20 @@ fn wet_process(
                             continue;
                         }
                     };
-                    let mut domain = match Url::parse(&uri) {
+                    let domain = match Url::parse(&uri) {
                         Ok(url) => match url.domain() {
                             Some(domain) => {
-                                domain.to_string()
+                                if blacklist.contains(domain) {
+                                    continue;
+                                }
+                                let key = domain.to_string();
+                                if LARGE_DOMAINS.contains_key(&key) {
+                                    let rand_num =
+                                        rng.gen_range(0u16..*LARGE_DOMAINS.get(&key).unwrap());
+                                    key + "***" + &rand_num.to_string()
+                                } else {
+                                    utf8_slice::till(domain, 128).to_string()
+                                }
                             }
                             None => {
                                 continue;
@@ -258,29 +288,20 @@ fn wet_process(
                             continue;
                         }
                     };
-                    if blacklist.contains(&domain) {
-                        continue;
-                    }
-                    domain = utf8_slice::till(&domain, 96).to_string();
-
-                    let body = match decode_bytes(record.body()) {
-                        Some(body) => {
-                            String::from(regex.replace_all(body.as_str(), ""))
-                        }
+                    let mut body = match decode_bytes(record.body()) {
+                        Some(body) => String::from(clean_regex.replace_all(body.as_str(), "")),
                         None => {
                             continue;
                         }
                     };
-                    let lang = match lang_detect(
-                        model.deref(),
-                        body.as_str(),
-                    ) {
-                        Some(lang) => {
-                            lang
-                        }
+                    let (mut lang, score) = match lang_detect(model.deref(), body.as_str()) {
+                        Some((lang, score)) => (lang, score),
                         None => continue,
                     };
-
+                    if ZH_VARIANTS.contains(&lang.as_str()) {
+                        lang = String::from("zho_Hant");
+                        body = zhconv(&body, Variant::ZhCN)
+                    }
 
                     let datapoint = DataPoint {
                         text: body,
@@ -288,6 +309,7 @@ fn wet_process(
                         uri: uri,
                         domain: domain,
                         language: lang,
+                        langscore: score,
                     };
                     records.push(datapoint);
                 }
@@ -307,12 +329,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .arg(Arg::new("output_dir").required(true))
         .arg(Arg::new("chunksize").required(true))
         .arg(Arg::new("mem_bound").required(true))
-        .arg(Arg::new("num_cores").required(true))
+        .arg(Arg::new("work_threads").required(true))
+        .arg(Arg::new("lid_path").required(true))
         .get_matches();
 
     let input_dir = matches.get_one::<String>("input_dir").unwrap().to_string();
-    let output_dir =
-        matches.get_one::<String>("output_dir").unwrap().to_string();
+    let output_dir = matches.get_one::<String>("output_dir").unwrap().to_string();
     let chunksize: usize = matches
         .get_one::<String>("chunksize")
         .unwrap()
@@ -323,27 +345,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap()
         .parse()
         .unwrap();
-    let num_cpus = sys_info::cpu_num().unwrap() as usize;
-    
-    let num_cores: usize = matches
-        .get_one::<String>("num_cores")
+    let lid_path = matches.get_one::<String>("lid_path").unwrap().to_string();
+
+    let num_cores= sys_info::cpu_num().unwrap() as usize;
+    let work_threads: usize = matches
+        .get_one::<String>("work_threads")
         .unwrap()
         .parse()
         .unwrap();
-    assert_eq!(num_cpus>=num_cores, true);
-    println!("avalable cpus: {}", num_cpus);
+    assert_eq!(num_cores>= work_threads, true);
+    println!("avalable cpus: {}, used {}", num_cores, work_threads);
     let mut ft_model = fasttext::FastText::new();
-    ft_model
-        .load_model("resource/models/cc_net-language/lid.176.bin")
-        .unwrap();
+    ft_model.load_model(lid_path.as_str()).unwrap();
     let ftm_arc = Arc::new(ft_model);
 
-    let blacklist =
-        std::io::BufReader::new(std::fs::File::open("resource/blacklist")?)
-            .lines()
-            .filter_map(Result::ok)
-            .collect::<HashSet<String>>();
-    // 设置 Rayon 线程池的最大线程数为 
+    let blacklist = std::io::BufReader::new(std::fs::File::open("resource/blacklist")?)
+        .lines()
+        .filter_map(Result::ok)
+        .collect::<HashSet<String>>();
+    // 设置 Rayon 线程池的最大线程数为
     let blacklist_arc = Arc::new(blacklist);
     ThreadPoolBuilder::new()
         .num_threads(num_cores)
@@ -352,17 +372,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut tasks: Vec<tokio::task::JoinHandle<()>> = vec![];
 
-    let archives: Vec<PathBuf> = WalkDir::new(input_dir.clone())
+    let mut archives: Vec<PathBuf> = WalkDir::new(input_dir.clone())
         .follow_links(true)
         .into_iter()
+        .par_bridge()
         .filter_map(|e| e.ok())
         .filter(|entry| {
             entry.file_type().is_file()
-                && entry.path().extension().and_then(|s| s.to_str())
-                    == Some("gz")
+                && entry.path().extension().and_then(|s| s.to_str()) == Some("gz")
         })
         .map(|entry| entry.path().to_path_buf())
         .collect();
+    archives.sort_unstable();
     println!("Collected {} files in {}", archives.len(), input_dir);
     let mut job_count = 0u8;
     let n_jobs = archives.len() / chunksize;
@@ -370,9 +391,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let start = Instant::now();
         let grouped_datapoints: HashMap<String, Vec<DataPoint>> = path_slice
             .par_iter()
-            .flat_map(|x| {
-                wet_process(x.clone(), ftm_arc.clone(), blacklist_arc.clone())
-            })
+            .progress()
+            .flat_map(|x| wet_process(x.clone(), ftm_arc.clone(), blacklist_arc.clone()))
             .fold(
                 || HashMap::new(),
                 |mut acc, dp| {
