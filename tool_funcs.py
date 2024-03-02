@@ -122,27 +122,12 @@ class CacheFolderManager:
 
     def finalize(self):
         # Ensure all delayed folders are deleted
-        logging.info(f"Cache Tottime: {self.tot_time:.2f}s")
+        logging.info(f"Cache ToT time: {self.tot_time:.2f}s")
         for folder in self.delayed_folders:
             self._delete_folder(folder)
         self.delayed_folders.clear()
         for thread in self.del_threads:
             thread.join()
-
-
-def send_feishu(msg):
-    msg = str(msg)
-    headers = {"Content-Type": "application/json"}
-    data = {
-        "msg_type": "text",
-        "content": {"text": hostname + ": " + msg + "".join(sys.argv)},
-    }
-    response = requests.post(
-        "https://www.feishu.cn/flow/api/trigger-webhook/01db450d719418d75f29a1b637cf2ca4",
-        json=data,
-        headers=headers,
-    )
-    return response.json()
 
 
 def data_save(file_path: str, data: Any, compress: bool = True, append=True):
@@ -170,7 +155,7 @@ def lang_detect(text: str) -> str:
     if score > 0.4:
         return labels[0].replace("__label__", "")
     else:
-        return 'unknow'
+        return "unknow"
 
 
 def get_memory_used() -> int:
@@ -294,8 +279,8 @@ def pool_exec(
     # log_listener.start()
     logging.info(f"Starting pool execution: {num_process} process")
     with ProcessPoolExecutor(
-        num_process  # , initializer=mp_logger_init, initargs=[log_queue]
-        , max_tasks_per_child= 128 # 进程生命周期
+        num_process,  # , initializer=mp_logger_init, initargs=[log_queue]
+        max_tasks_per_child=128,  # 进程生命周期
     ) as executor:
         # sig_register(signal_handler)
         try:
@@ -443,42 +428,3 @@ def exec_command(cmd: str, args: list[str] = None):
         logging.fatal(COLOR_RED + f"Error while exec: {' '.join(cmd)}" + COLOR_RESET)
         return -1
     return 0
-
-
-safety_settings = [
-    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-]
-generation_config = {
-    "candidate_count": 1,
-    "stop_sequences": None,
-    "max_output_tokens": None,
-    "top_p": None,
-    "top_k": None,
-}
-
-GOOGLE_API_KEY = [
-    "AIzaSyAQSqXqih0qx0E0U5eUWz1WI_-pt4LjpYk",
-    "AIzaSyBm6uJawMNtQ97P7gIX_F1Jb2csZQlRZXA",
-    "AIzaSyBA7Bd1jyVePHOKVFmhM7zA1RSxvvIoCS0",
-    "AIzaSyBks5-bQ96-uyhvIOCtoPToVqKIdl4szcQ",
-]
-
-import google.generativeai as genai
-
-
-def gemini(text: str, idx: int):
-    genai.configure(api_key=GOOGLE_API_KEY[idx % 4])
-    model = genai.GenerativeModel("gemini-pro")
-    global results
-    prompt = "请讲将下列这段英文描述翻译成中文\n原文: " + text + "\n译文:"
-
-    try:
-        results[idx] = model.generate_content(
-            prompt, generation_config=generation_config, safety_settings=safety_settings
-        ).text
-    except:
-        print("出现错误，调大睡眠时间")
-        results[idx] = None

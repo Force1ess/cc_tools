@@ -50,13 +50,15 @@ fn garble_check(input: String) -> Option<String> {
     Some(input)
 }
 
-fn lang_detect(model: &fasttext::FastText, text: &str) -> Option<(String, f32)> {
-    match model.predict(text.replace("\0", "").as_str(), 1, 0f32) {
-        Ok(predictions) => match predictions.first() {
-            Some(first) => Some((first.label.replace("__label__", ""), first.prob)),
-            None => None,
+fn lang_detect(model: &fasttext::FastText, text: &str) -> (String, f32) {
+    let preds = model.predict(text.replace("\0", "").as_str(), 1, 0f32).unwrap();
+    let first = preds.first();
+    match first {
+        Some(pred) => (pred.label.replace("__label__", ""), pred.prob),
+        None => {
+            println!("No prediction for {}", text);
+            ("unknown".to_string(), 0.0)
         },
-        Err(_) => None,
     }
 }
 
@@ -221,8 +223,8 @@ mod tests {
             .load_model("resource/models/cc_net-language/lid.176.bin")
             .unwrap();
         println!("{:?}", lang_detect(&ft_model, "くくくくhel卧槽"));
-        assert_eq!("zh", lang_detect(&ft_model, "我是中国人").unwrap().0);
-        assert_eq!("zh", lang_detect(&ft_model, "我是中国\0人").unwrap().0);
+        assert_eq!("zh", lang_detect(&ft_model, "我是中国人").0);
+        assert_eq!("zh", lang_detect(&ft_model, "我是中国\0人").0);
     }
     #[test]
     fn utf8_slice_works() {
@@ -254,7 +256,7 @@ fn wet_process(
                 }
                 Ok(record) => {
                     if record.warc_type() != &warc::RecordType::Conversion
-                        || record.content_length() < 400
+                        || record.content_length() < 200
                     {
                         continue;
                     }
@@ -294,10 +296,13 @@ fn wet_process(
                             continue;
                         }
                     };
-                    let (mut lang, score) = match lang_detect(model.deref(), body.as_str()) {
-                        Some((lang, score)) => (lang, score),
-                        None => continue,
-                    };
+                    if body.len() < 200{
+                        continue;
+                    }
+                    let (mut lang, score) = lang_detect(model.deref(), body.as_str());
+                    if lang=="unknown"{
+                        continue;
+                    }
                     if ZH_VARIANTS.contains(&lang.as_str()) {
                         lang = String::from("zho_Hant");
                         body = zhconv(&body, Variant::ZhCN)
@@ -366,7 +371,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 设置 Rayon 线程池的最大线程数为
     let blacklist_arc = Arc::new(blacklist);
     ThreadPoolBuilder::new()
-        .num_threads(num_cores)
+        .num_threads(work_threads)
         .build_global()
         .unwrap();
 
@@ -384,6 +389,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|entry| entry.path().to_path_buf())
         .collect();
     archives.sort_unstable();
+    archives.drain(950*2..archives.len());
     println!("Collected {} files in {}", archives.len(), input_dir);
     let mut job_count = 0u8;
     let n_jobs = archives.len() / chunksize;

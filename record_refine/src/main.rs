@@ -1,9 +1,4 @@
 use clap::{command, Arg};
-// TODO SPANREGEX
-//use std::env;
-// fn main() {
-//     env::set_var("ARROW_MEMORY_CAPACITY", "100000000"); // 设置内存限制为 100MB
-// }
 use parquet::file::serialized_reader::SerializedFileReader;
 use rand::Rng;
 use rayon::{prelude::*, ThreadPoolBuilder};
@@ -29,12 +24,15 @@ const TRIE_TRY: usize = 100;
 
 fn domain_refine(
     mut df: Vec<RawDataPoint>,
-    domain: String,
-    min_textlen: usize,
-    min_blocklen: usize,
     trie: Option<&Trie>,
+    domain: String,
+    language: String,
     sender: Sender<(Option<(Vec<RefinedDataPoint>, Vec<u64>)>, RefineResult)>,
 ) {
+    let (mut min_textlen, mut min_blocklen) = (250, 50);
+    if language == "zho_Hant" {
+        (min_textlen, min_blocklen) = (150, 30);
+    }
     let mut del_idxs = HashSet::new();
     let mut sens_count = 0;
     let orig_len_u = df.len();
@@ -44,6 +42,7 @@ fn domain_refine(
 
     let mut result = RefineResult::default();
     result.domain = domain;
+    result.language = language;
     result.orig_len = orig_len_u;
     result.num_span_repeat = orig_len_u - df.len();
 
@@ -82,7 +81,11 @@ fn domain_refine(
 
     let repeat_time: u16 = max(20, min(500, df.len() / 5)) as u16;
     let mut rng = rand::thread_rng();
-    let mut datapoints: Vec<DataPoint> = df.into_iter().map(|dp| dp.into()).collect();
+    let mut datapoints: Vec<_> = df
+        .into_iter()
+        .map(|dp| dp.into())
+        .filter(|dp: &DataPoint| dp.textlen >= min_textlen)
+        .collect();
 
     let mut fail_count: u16 = 0;
     // para dedup
@@ -127,11 +130,6 @@ fn domain_refine(
         if small_sus_pattern.is_empty() {
             continue;
         }
-        #[cfg(debug_assertions)]
-        {
-            println!("small patterns: {:?}", small_sus_pattern);
-        }
-
         for _ in 0..repeat_time / 2 {
             let idx_c: usize = rng.gen_range(0..datapoints.len());
             if idx_c == idx_a || idx_c == idx_b || del_idxs.contains(&idx_c) {
@@ -170,10 +168,6 @@ fn domain_refine(
             }
         }
         result.num_dedup_para += del_idxs.len();
-    }
-    #[cfg(debug_assertions)]
-    {
-        println!("Founded small patterns: {:?}", result.dedup_patterns);
     }
     //block dedup
     fail_count = 0;
@@ -219,10 +213,6 @@ fn domain_refine(
                     continue;
                 }
                 fail_count = 0;
-                #[cfg(debug_assertions)]
-                {
-                    println!("Founded pattern: {}", lcs)
-                }
                 for (content_id, content) in datapoints.iter_mut().enumerate() {
                     if let Some((para_idx, paralen)) =
                         ngram_match(&lcs, &content.paras, min_blocklen)
@@ -241,13 +231,6 @@ fn domain_refine(
             }
         }
         result.num_dedup_block += del_idxs.len();
-    }
-    #[cfg(debug_assertions)]
-    {
-        println!(
-            "Founded all patterns: {:?} on {} rows",
-            result.dedup_patterns, orig_len_u
-        );
     }
     result.finish(Some(datapoints), sender);
 }
@@ -268,15 +251,37 @@ fn record_refine(
         .collect();
 
     // 不能使用par，否则会导致数据竞争
-    let rows = files
+    // let rows = files
+    //     .into_iter()
+    //     .map(|file| SerializedFileReader::new(File::open(file).unwrap()))
+    //     .filter(|reader| reader.is_ok()) // 不报错的版本
+    //     .flat_map(
+    //         |reader| reader.unwrap().into_iter(), // 此处可能会遇到parquet文件损坏的情况
+    //     )
+    //     .collect::<Vec<_>>();
+    let records: Vec<_> = files
         .into_iter()
         .flat_map(|file| {
-            SerializedFileReader::new(File::open(file).unwrap())
-                .unwrap()
-                .into_iter()
+            // 尝试打开文件并创建 SerializedFileReader
+            let parquet_file = File::open(&file).unwrap();
+            let reader = SerializedFileReader::new(parquet_file);
+
+            match reader {
+                Ok(r) => Some(r.into_iter()),
+                Err(e) => {
+                    // 存在parquet文件损坏的情况
+                    println!(
+                        "Error reading parquet file: {}, error: {}",
+                        file.to_str().unwrap(),
+                        e
+                    );
+                    None
+                }
+            }
         })
-        .collect::<Vec<_>>();
-    for row in rows {
+        .flatten() // 将 Option<Vec<_>> 转换为 Vec<_>
+        .collect();
+    for row in records {
         //使用新的数据
         let dp: RawDataPoint = row.unwrap().into();
         if !lang_datapoints.contains_key(&dp.language) {
@@ -288,16 +293,11 @@ fn record_refine(
         .into_iter()
         .par_bridge()
         .for_each(|(lang, datapoints)| {
-            let (mut min_textlen, mut min_blocklen) = (270, 50);
-            if lang == "zho_Hant" {
-                (min_textlen, min_blocklen) = (150, 30);
-            }
             domain_refine(
                 datapoints,
-                domain.to_owned(),
-                min_textlen,
-                min_blocklen,
                 trie_forest.get(&lang),
+                domain.to_owned(),
+                lang,
                 sender.clone(),
             )
         });
@@ -315,25 +315,17 @@ fn main() {
 
     let input_dir = matches.get_one::<String>("input_dir").unwrap().to_string();
     let output_dir = matches.get_one::<String>("output_dir").unwrap().to_string();
-    create_dir_all(output_dir.clone()+"/hash").unwrap();
-    create_dir_all(output_dir.clone()+"/domain_stats").unwrap();
-    assert_eq!(
-        OUTPUT_DIR.set(output_dir),
-        Ok(())
-    );
+    create_dir_all(output_dir.clone() + "/hash").unwrap();
+    create_dir_all(output_dir.clone() + "/domain_stats").unwrap();
+    assert_eq!(OUTPUT_DIR.set(output_dir), Ok(()));
 
     let qmdodel_path = matches
         .get_one::<String>("qmdodel_path")
         .unwrap()
         .to_string();
     let mut model = fasttext::FastText::new();
-    model
-        .load_model(&qmdodel_path)
-        .unwrap();
-    assert_eq!(
-        SCORE_MODEL.set(model).unwrap(),
-        ()
-    );
+    model.load_model(&qmdodel_path).unwrap();
+    assert_eq!(SCORE_MODEL.set(model).unwrap(), ());
 
     let badwords_dir = matches
         .get_one::<String>("badwords_dir")
@@ -396,6 +388,7 @@ fn main() {
     println!("Loaded preprocessed data: {} domains", domain_folders.len());
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || io_manager(receiver));
+
     // foreach无返回值不需要收集
     domain_folders
         .into_par_iter()

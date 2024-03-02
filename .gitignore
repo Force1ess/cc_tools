@@ -8,6 +8,7 @@ temp
 MAKEFILE
 *test*
 __pycache__
+resource
 .vscode
 trans
 trash
@@ -15,16 +16,12 @@ trash
 *.tar
 blacklists
 rsync.py
-data/2.record_refine/trash/cc-news
 100GB
 tmp
 cc_net
 ark_deduper
-100GB/3.hash_deduped
 fastText
 models
-resource/blacklist
-cc_tools/blacklist
-resource/bin
 *empty*
 target
+discard

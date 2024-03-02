@@ -46,7 +46,7 @@ pub struct DataPoint {
 impl From<RawDataPoint> for DataPoint {
     fn from(raw_dp: RawDataPoint) -> Self {
         let paras: Vec<String> = raw_dp.text.split('\n').map(|s| s.to_string()).collect();
-        let len: usize = raw_dp.text.len()- paras.len()+1;
+        let len: usize = raw_dp.text.len() - paras.len() + 1;
         Self {
             paras: paras,
             uri: raw_dp.uri,
@@ -80,7 +80,7 @@ impl From<DataPoint> for RefinedDataPoint {
         let text = dp.paras.join("\n"); // 把所有的段落连接成一个字符串
         Self {
             quality_score: text_score(&text, &dp.language),
-            paralen: (text.len() / num_paras) as f32, // !! 出现了/0错误，为什么之前没有丢弃？
+            paralen: (text.len() / num_paras) as f32, 
             textlen: text.len(),
             text_ret_rate: (text.len() as f32) / dp.orig_textlen as f32,
             text: text,
@@ -103,6 +103,7 @@ pub struct RefineResult {
     pub dedup_patterns: Vec<String>,
     pub orig_len: usize,
     pub domain: String,
+    pub language: String,
     avg_lang_score: f32,
     avg_quality_score: f32, //注意，为0代表的是没打分而不是分数真的为0，后续需要处理
     avg_paralen: f32,
@@ -151,9 +152,15 @@ impl RefineResult {
                     .count() as f32;
             self.avg_text_ret_rate = datapoints.iter().map(|dp| dp.text_ret_rate).sum::<f32>()
                 / datapoints.len() as f32;
-            sender.send((Some((datapoints, hash)), self)).unwrap();
+            match sender.send((Some((datapoints, hash)), self)) {
+                Ok(_) => {}
+                Err(e) => eprintln!("Failed to send data with datapoints: {}", e),
+            }
         } else {
-            sender.send((None, self)).unwrap();
+            match sender.send((None, self)) {
+                Ok(_) => {}
+                Err(e) => eprintln!("Failed to send data without datapoints: {}", e),
+            }
         }
     }
 }
@@ -165,7 +172,7 @@ const MAX_DOMAINS: usize = 100_000;
 #[cfg(not(debug_assertions))]
 const MAX_RECORDS: usize = 1000_000; // 大约4G
 #[cfg(debug_assertions)]
-const MAX_RECORDS: usize = 1000;
+const MAX_RECORDS: usize = 100_000;
 
 pub fn io_manager(
     revicer: std::sync::mpsc::Receiver<(Option<(Vec<RefinedDataPoint>, Vec<u64>)>, RefineResult)>,
@@ -209,6 +216,7 @@ pub fn io_manager(
             num_records = 0;
             file_count += 1;
         }
+
     }
     save_data(
         &mut datapoints_list,
@@ -266,6 +274,7 @@ fn save_domain_stats(domain_stats: &Vec<RefineResult>, file_count: usize) {
         Field::new("orig_len", DataType::UInt64, true),
         Field::new("domain", DataType::Utf8, true),
         Field::new("file_index", DataType::UInt64, true),
+        Field::new("language", DataType::Utf8, true),
     ]);
 
     let schema_ref = Arc::new(schema);
@@ -285,6 +294,7 @@ fn save_domain_stats(domain_stats: &Vec<RefineResult>, file_count: usize) {
     let mut orig_len_builder = UInt64Builder::with_capacity(domain_stats_len);
     let mut domain_builder = StringBuilder::new();
     let mut file_index_builder = UInt64Builder::with_capacity(domain_stats_len);
+    let mut language_builder = StringBuilder::new();
 
     for ds in domain_stats {
         num_sens_builder.append_value(ds.num_sens as u64);
@@ -300,6 +310,7 @@ fn save_domain_stats(domain_stats: &Vec<RefineResult>, file_count: usize) {
         orig_len_builder.append_value(ds.orig_len as u64);
         domain_builder.append_value(&ds.domain);
         file_index_builder.append_value(file_count as u64);
+        language_builder.append_value(&ds.language);
     }
 
     let record_batch = RecordBatch::try_new(
@@ -318,6 +329,7 @@ fn save_domain_stats(domain_stats: &Vec<RefineResult>, file_count: usize) {
             Arc::new(orig_len_builder.finish()),
             Arc::new(domain_builder.finish()),
             Arc::new(file_index_builder.finish()),
+            Arc::new(language_builder.finish()),
         ],
     )
     .unwrap();
