@@ -15,7 +15,6 @@ import traceback
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
 from logging import handlers
-from os.path import join as pathjoin
 from pathlib import Path
 from threading import Thread
 from time import sleep

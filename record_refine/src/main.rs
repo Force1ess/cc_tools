@@ -317,6 +317,7 @@ fn main() {
     let output_dir = matches.get_one::<String>("output_dir").unwrap().to_string();
     create_dir_all(output_dir.clone() + "/hash").unwrap();
     create_dir_all(output_dir.clone() + "/domain_stats").unwrap();
+     create_dir_all(output_dir.clone() + "/data").unwrap();
     assert_eq!(OUTPUT_DIR.set(output_dir), Ok(()));
 
     let qmdodel_path = matches

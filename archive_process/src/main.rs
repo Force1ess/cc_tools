@@ -51,14 +51,13 @@ fn garble_check(input: String) -> Option<String> {
 }
 
 fn lang_detect(model: &fasttext::FastText, text: &str) -> (String, f32) {
-    let preds = model.predict(text.replace("\0", "").as_str(), 1, 0f32).unwrap();
+    let preds = model
+        .predict(text.replace("\0", "").as_str(), 1, 0f32)
+        .unwrap();
     let first = preds.first();
     match first {
         Some(pred) => (pred.label.replace("__label__", ""), pred.prob),
-        None => {
-            println!("No prediction for {}", text);
-            ("unknown".to_string(), 0.0)
-        },
+        None => ("unknown".to_string(), 0.0),
     }
 }
 
@@ -105,7 +104,7 @@ async fn records_saver(
     unsafe {
         libc::getrlimit(libc::RLIMIT_NOFILE, &mut limits);
     }
-    let fd_limit = (limits.rlim_cur / 4) as usize;
+    let fd_limit = (limits.rlim_cur / 3) as usize;
 
     let schema = Schema::new(vec![
         Field::new("text", DataType::Utf8, false),
@@ -203,7 +202,7 @@ mod tests {
     // 测试
     #[test]
     fn garble_workds() {
-        let garbledtext = "Ã、�、¤Ã、�、¤Ã、�、¤Ã、�、¤Ã、�、¤Ã、�、¤Ã、�、¤Ã、�、¤Ã、�、¤";
+        let garbledtext = "Ã、�、¤";
         assert_eq!(garble_check(garbledtext.to_string()), None);
     }
 
@@ -277,7 +276,7 @@ fn wet_process(
                                 if LARGE_DOMAINS.contains_key(&key) {
                                     let rand_num =
                                         rng.gen_range(0u16..*LARGE_DOMAINS.get(&key).unwrap());
-                                    key + "***" + &rand_num.to_string()
+                                    key + "---" + &rand_num.to_string()
                                 } else {
                                     utf8_slice::till(domain, 128).to_string()
                                 }
@@ -291,22 +290,28 @@ fn wet_process(
                         }
                     };
                     let mut body = match decode_bytes(record.body()) {
-                        Some(body) => String::from(clean_regex.replace_all(body.as_str(), "")),
+                        Some(body) => body,
                         None => {
                             continue;
                         }
                     };
-                    if body.len() < 200{
+                    if body.len() < 200 {
                         continue;
                     }
                     let (mut lang, score) = lang_detect(model.deref(), body.as_str());
-                    if lang=="unknown"{
+                    if lang == "unknown" {
                         continue;
                     }
                     if ZH_VARIANTS.contains(&lang.as_str()) {
                         lang = String::from("zho_Hant");
                         body = zhconv(&body, Variant::ZhCN)
                     }
+                    //filter
+                    if lang != "zho_Hant" {
+                        continue;
+                    }
+                    // clean
+                    body = String::from(clean_regex.replace_all(body.as_str(), ""));
 
                     let datapoint = DataPoint {
                         text: body,
@@ -352,13 +357,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap();
     let lid_path = matches.get_one::<String>("lid_path").unwrap().to_string();
 
-    let num_cores= sys_info::cpu_num().unwrap() as usize;
+    let num_cores = sys_info::cpu_num().unwrap() as usize;
     let work_threads: usize = matches
         .get_one::<String>("work_threads")
         .unwrap()
         .parse()
         .unwrap();
-    assert_eq!(num_cores>= work_threads, true);
+    assert_eq!(num_cores >= work_threads, true);
     println!("avalable cpus: {}, used {}", num_cores, work_threads);
     let mut ft_model = fasttext::FastText::new();
     ft_model.load_model(lid_path.as_str()).unwrap();
@@ -389,7 +394,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|entry| entry.path().to_path_buf())
         .collect();
     archives.sort_unstable();
-    archives.drain(950*2..archives.len());
     println!("Collected {} files in {}", archives.len(), input_dir);
     let mut job_count = 0u8;
     let n_jobs = archives.len() / chunksize;

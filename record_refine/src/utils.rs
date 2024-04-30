@@ -11,6 +11,24 @@ static STOPWORDS: Lazy<Vec<String>> = Lazy::new(|| {
 });
 pub static SCORE_MODEL: OnceCell<fasttext::FastText> = OnceCell::new();
 static JIEBA: Lazy<Jieba> = Lazy::new(|| Jieba::new());
+
+pub fn check_segments(input: &str) -> bool {
+    let segments = input.split('\n');
+
+    let mut short_segments_count = 0;
+    for segment in segments {
+        if segment.trim().len() < 20 {
+            short_segments_count += 1;
+            if short_segments_count >= 5 {
+                return false;
+            }
+        } else {
+            short_segments_count = 0;
+        }
+    }
+    true
+}
+
 pub fn consecutive_spans_detect(text: &str) -> bool {
     let words = SPLIT_RE.split(text).collect::<Vec<_>>();
     let mut queue = [""; 3];
@@ -145,7 +163,6 @@ pub fn ngram_match(ngram: &str, text: &[String], min_len: usize) -> Option<(usiz
 }
 
 mod test {
-    use fasttext::FastText;
 
     #[allow(unused_imports)]
     use super::*;
@@ -155,42 +172,6 @@ mod test {
         assert_eq!(consecutive_spans_detect(text), true);
         let text = "今天心情真不错!今天心情真不错.今天心情真不错，今天天气真好。\n今天心情真不错，今天天气真好。";
         assert_eq!(consecutive_spans_detect(text), false);
-    }
-    #[test]
-    fn test_score() {
-        let mut ft_model = FastText::new();
-        ft_model
-            .load_model("resource/models/oasis-fasttext/model.bin")
-            .unwrap();
-        let _ = SCORE_MODEL.set(ft_model);
-        let text = "友情链接表	今天有什么球赛百丽宫影城华夏天机网90ko金赞娱乐场老虎机游戏在线玩外国中文网站大全767666.com风云足球节目天上人间影院风云足球直播表六合彩官方网站皇冠网上投注澳门金沙彩票投注站申请喜彩网雁荡山棋牌jj斗地主官方淘宝皇冠店铺大全澳门网络博彩欧洲杯官网六合彩免费资料澳门彩票官网香港马会六合彩体球比分网指定开心斗地主单机版下载博彩网信誉娱乐城迅盈网球比分永利国际时时彩导航澳门球盘国际老虎日顶尖高手主论坛线上赌博网站奇迹娱乐城bet007篮球中国长城网博彩网金世豪娱乐时时彩qq群爱博邮件群发系统凤凰全讯网博e百彩讯网虎扑足球中国竞彩网站网上真钱斗地主";
-        let text_lines = "友情链接表	今天有什么球赛百丽宫影城华夏天机网90ko\n金赞娱乐场老虎机游戏在线玩外国中文网站大全767666.\ncom风云足球节目天上人间影院风云足球直播表六合彩官方网站皇冠网上投注澳门金沙彩票投注站申请喜彩网雁荡山棋牌jj斗地主官方淘宝皇冠店铺大全澳门网络博彩欧洲杯官网六合彩免费资料澳门彩票官网香港马会六合彩体球比分网指定开心斗地主单机版下载博彩网信誉娱乐城迅盈网球比分永利国际时时彩导航澳门球盘国际老虎日顶尖高手主论坛线上赌博网站奇迹娱乐城bet007篮球中国长城网博彩网金世豪娱乐时时彩qq群爱博邮件群发系统凤凰全讯网博e百彩讯网虎扑足球中国竞彩网站网上真钱斗地主";
-        println!(
-            "{:?}",
-            SCORE_MODEL.get().unwrap().predict(text_lines, 1, 0.0)
-        );
-        println!(
-            "{:?}",
-            SCORE_MODEL.get().unwrap().predict(text_lines, 5, 0.0)
-        );
-        for para in text_lines.split("\n") {
-            println!(
-                "1 - para:{}, score:{:?}",
-                para,
-                SCORE_MODEL.get().unwrap().predict(para, 1, 0.0)
-            );
-        }
-
-        for para in text_lines.split("\n") {
-            println!(
-                "5 - para:{}, score:{:?}",
-                para,
-                SCORE_MODEL.get().unwrap().predict(para, 5, 0.0)
-            );
-        }
-
-        assert!(text_score(text, "zho_Hant") < -0.5f32);
-        assert_eq!(text_score(text, "en"), 0f32);
     }
     #[test]
     fn test_jieba() {

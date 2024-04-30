@@ -25,3 +25,5 @@ models
 *empty*
 target
 discard
+*.bin
+*.pt

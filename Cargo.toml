@@ -2,4 +2,5 @@
 members = [
     "archive_process",
     "record_refine",
+    "archive_process_warc"
 ]

@@ -72,7 +72,7 @@ pub struct RefinedDataPoint {
     text_ret_rate: f32,
     textlen: usize,
 }
-use crate::utils::text_score;
+use crate::utils::{check_segments, text_score};
 
 impl From<DataPoint> for RefinedDataPoint {
     fn from(dp: DataPoint) -> Self {
@@ -80,7 +80,7 @@ impl From<DataPoint> for RefinedDataPoint {
         let text = dp.paras.join("\n"); // 把所有的段落连接成一个字符串
         Self {
             quality_score: text_score(&text, &dp.language),
-            paralen: (text.len() / num_paras) as f32, 
+            paralen: (text.len() / num_paras) as f32,
             textlen: text.len(),
             text_ret_rate: (text.len() as f32) / dp.orig_textlen as f32,
             text: text,
@@ -128,6 +128,9 @@ impl RefineResult {
             let mut datapoints: Vec<RefinedDataPoint> =
                 df.into_iter().map(|dp| dp.into()).collect();
 
+            // discard text contains consec short paras
+            datapoints.retain(|dp| check_segments(&dp.text));
+
             // discard short paragraphs
             let len_u = datapoints.len();
             datapoints.retain(|dp| dp.paralen > 10f32);
@@ -165,14 +168,8 @@ impl RefineResult {
     }
 }
 
-// const MAX_DOMAINS: usize = 100_000;
-// const MAX_RECORDS: usize = 1000_000; 大约4G
-
-const MAX_DOMAINS: usize = 100_000;
-#[cfg(not(debug_assertions))]
-const MAX_RECORDS: usize = 1000_000; // 大约4G
-#[cfg(debug_assertions)]
-const MAX_RECORDS: usize = 100_000;
+const MAX_DOMAINS: usize = 10_000; // 100_000;
+const MAX_RECORDS: usize = 100_000; //1000_000; // 大约0.4G
 
 pub fn io_manager(
     revicer: std::sync::mpsc::Receiver<(Option<(Vec<RefinedDataPoint>, Vec<u64>)>, RefineResult)>,
@@ -183,8 +180,9 @@ pub fn io_manager(
     let mut num_records = 0;
     let mut datapoints_list = Vec::with_capacity(MAX_RECORDS);
     let mut file_count = 0;
-    let mut dirty_count = 0;
-    let mut dirty_file = File::create("dirty_domainsv.txt").expect("Unable to create file");
+    // let mut dirty_count = 0;
+    let mut dirty_file = File::create(format!("{}/dirty_domain.csv", OUTPUT_DIR.get().unwrap(),))
+        .expect("Unable to create file");
     let mut writed_records = 0;
 
     for (data, domain_stat) in revicer {
@@ -193,30 +191,31 @@ pub fn io_manager(
             datapoints_list.extend(datapoints);
             hash_list.extend(hash);
             domain_stats.push(domain_stat);
+
+            if num_records > MAX_RECORDS {
+                save_data(
+                    &mut datapoints_list,
+                    &mut domain_stats,
+                    &mut hash_list,
+                    file_count,
+                );
+                datapoints_list.clear();
+                domain_stats.clear();
+                hash_list.clear();
+                writed_records += num_records;
+                num_records = 0;
+                file_count += 1;
+            }
         } else {
             dirty_domains.push_str(&domain_stat.domain);
             dirty_domains.push_str("\n");
-            dirty_count += 1;
-            if dirty_count == MAX_RECORDS {
-                dirty_file.write_all(dirty_domains.as_bytes()).unwrap();
-                dirty_domains.clear();
-                dirty_count = 0;
-            }
-            domain_stats.push(domain_stat);
+            // dirty_count += 1;
+            // if dirty_count == MAX_RECORDS {
+            //     dirty_file.write_all(dirty_domains.as_bytes()).unwrap();
+            //     dirty_domains.clear();
+            //     dirty_count = 0;
+            // }
         }
-
-        if num_records > MAX_RECORDS {
-            save_data(
-                &mut datapoints_list,
-                &mut domain_stats,
-                &mut hash_list,
-                file_count,
-            );
-            writed_records += num_records;
-            num_records = 0;
-            file_count += 1;
-        }
-
     }
     save_data(
         &mut datapoints_list,
@@ -224,6 +223,7 @@ pub fn io_manager(
         &mut hash_list,
         file_count,
     );
+    dirty_file.write_all(dirty_domains.as_bytes()).unwrap();
     writed_records += num_records;
     println!(
         "Process finished: {} records saved in {} files",
@@ -256,8 +256,6 @@ fn save_data(
     );
     save_domain_data(datapoints, file_count);
     save_domain_stats(domain_stats, file_count);
-    datapoints.clear();
-    domain_stats.clear();
 }
 fn save_domain_stats(domain_stats: &Vec<RefineResult>, file_count: usize) {
     let schema = Schema::new(vec![
@@ -404,7 +402,7 @@ fn save_domain_data(datapoints: &Vec<RefinedDataPoint>, file_count: usize) {
     .unwrap();
 
     let file_path = PathBuf::from(format!(
-        "{}/{:04}.parquet",
+        "{}/data/{:04}.parquet",
         OUTPUT_DIR.get().unwrap(),
         file_count
     ));
