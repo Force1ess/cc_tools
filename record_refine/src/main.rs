@@ -16,7 +16,7 @@ use indicatif::ParallelProgressIterator;
 use std::sync::mpsc::{self, Sender};
 use utils::{consecutive_spans_detect, ngram_lcs, ngram_match};
 
-use crate::utils::SCORE_MODEL;
+use crate::utils::LANGDET_MODEL;
 
 const TRIE_TRY: usize = 100;
 
@@ -30,7 +30,7 @@ fn domain_refine(
     sender: Sender<(Option<(Vec<RefinedDataPoint>, Vec<u64>)>, RefineResult)>,
 ) {
     let (mut min_textlen, mut min_blocklen) = (250, 50);
-    if language == "zho_Hant" {
+    if language == "zh" {
         (min_textlen, min_blocklen) = (150, 30);
     }
     let mut del_idxs = HashSet::new();
@@ -326,7 +326,7 @@ fn main() {
         .to_string();
     let mut model = fasttext::FastText::new();
     model.load_model(&qmdodel_path).unwrap();
-    assert_eq!(SCORE_MODEL.set(model).unwrap(), ());
+    assert_eq!(LANGDET_MODEL.set(model).unwrap(), ());
 
     let badwords_dir = matches
         .get_one::<String>("badwords_dir")

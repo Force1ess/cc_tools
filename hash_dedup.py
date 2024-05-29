@@ -1,4 +1,5 @@
 import logging
+import sys
 import json
 from shutil import copyfile
 import jsonlines
@@ -146,7 +147,7 @@ def hash_dedup():
 
 
 if __name__ == "__main__":
-    dump_dir = "/data_ssd/zhenghao2022/refined/CC-NEWS"
+    dump_dir = sys.argv[1]
     hash_folder = pathjoin(dump_dir, "hash")
     os.chdir(hash_folder)
     hash_dedup()

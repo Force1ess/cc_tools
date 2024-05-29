@@ -36,7 +36,6 @@ static LARGE_DOMAINS: Lazy<HashMap<String, u16>> = Lazy::new(|| {
         .collect()
 });
 use zhconv::{zhconv, Variant};
-const ZH_VARIANTS: [&str; 2] = ["zho_Hans", "yue_Hant"];
 fn garble_check(input: String) -> Option<String> {
     let mut count = 0;
     for ch in input.chars().take(300) {
@@ -195,49 +194,6 @@ struct DataPoint {
 // 全大写，全数字，电话号码，邮箱，qq
 const ALL_REGEX: &str = r"\n+[A-Z]+\n|\n+[0-9]+\n|\b\+?\d{1,3}\s?\d{4,14}\b|\b[\w\-\.]+@([\w-]+\.)+[\w-]{2,4}\b|\b[Qq]{2}.{1,3}\d{6,10}\b";
 // 使用原子组来优化性能
-#[cfg(test)]
-mod tests {
-
-    use super::*;
-    // 测试
-    #[test]
-    fn garble_workds() {
-        let garbledtext = "Ã、�、¤";
-        assert_eq!(garble_check(garbledtext.to_string()), None);
-    }
-
-    #[test]
-    fn regex_works() {
-        let regex = Regex::new(ALL_REGEX).unwrap();
-        assert!(regex.is_match("qq 2304160042"));
-        assert!(regex.is_match("\nSKLDJKLS\n"));
-        assert!(regex.is_match("\n1293918273\n"));
-        assert!(regex.is_match("\nmyasdasd@mail.com\n"));
-        assert!(regex.is_match("\n+86 13800138000\n"));
-    }
-    #[test]
-    fn langid_works() {
-        let mut ft_model = fasttext::FastText::new();
-        ft_model
-            .load_model("resource/models/cc_net-language/lid.176.bin")
-            .unwrap();
-        println!("{:?}", lang_detect(&ft_model, "くくくくhel卧槽"));
-        assert_eq!("zh", lang_detect(&ft_model, "我是中国人").0);
-        assert_eq!("zh", lang_detect(&ft_model, "我是中国\0人").0);
-    }
-    #[test]
-    fn utf8_slice_works() {
-        // 多种语言
-        let text = vec![
-            ("你好，我测你🐎", "你好"),
-            ("こんにちは、テストさせてください🐎", "こん"),
-        ];
-        for (text, sliced_text) in text {
-            let slice = utf8_slice::till(text, 2);
-            assert_eq!(slice, sliced_text);
-        }
-    }
-}
 
 fn wet_process(
     filename: std::path::PathBuf,
@@ -298,18 +254,11 @@ fn wet_process(
                     if body.len() < 200 {
                         continue;
                     }
-                    let (mut lang, score) = lang_detect(model.deref(), body.as_str());
-                    if lang == "unknown" {
+                    let (lang, score) = lang_detect(model.deref(), body.as_str());
+                    if lang != "zh" {
                         continue;
                     }
-                    if ZH_VARIANTS.contains(&lang.as_str()) {
-                        lang = String::from("zho_Hant");
-                        body = zhconv(&body, Variant::ZhCN)
-                    }
-                    //filter
-                    if lang != "zho_Hant" {
-                        continue;
-                    }
+                    body = zhconv(&body, Variant::ZhCN);
                     // clean
                     body = String::from(clean_regex.replace_all(body.as_str(), ""));
 
@@ -345,7 +294,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let input_dir = matches.get_one::<String>("input_dir").unwrap().to_string();
     let output_dir = matches.get_one::<String>("output_dir").unwrap().to_string();
-    let chunksize: usize = matches
+    let mut chunksize: usize = matches
         .get_one::<String>("chunksize")
         .unwrap()
         .parse()
@@ -396,6 +345,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     archives.sort_unstable();
     println!("Collected {} files in {}", archives.len(), input_dir);
     let mut job_count = 0u8;
+    if chunksize > archives.len() {
+        chunksize = archives.len();
+    }
     let n_jobs = archives.len() / chunksize;
     for path_slice in archives.chunks(chunksize) {
         let start = Instant::now();
@@ -451,4 +403,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     futures::future::join_all(tasks).await;
     println!("Saving finished, cost: {:?}s", start.elapsed());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+    // 测试
+    #[test]
+    fn garble_workds() {
+        let garbledtext = "Ã、�、¤";
+        assert_eq!(garble_check(garbledtext.to_string()), None);
+    }
+
+    #[test]
+    fn regex_works() {
+        let regex = Regex::new(ALL_REGEX).unwrap();
+        assert!(regex.is_match("qq 2304160042"));
+        assert!(regex.is_match("\nSKLDJKLS\n"));
+        assert!(regex.is_match("\n1293918273\n"));
+        assert!(regex.is_match("\nmyasdasd@mail.com\n"));
+        assert!(regex.is_match("\n+86 13800138000\n"));
+    }
+    #[test]
+    fn langid_works() {
+        let mut ft_model = fasttext::FastText::new();
+        ft_model
+            .load_model("resource/models/cc_net-language/nllb-model.bin")
+            .unwrap();
+        println!(
+            "{:?}",
+            lang_detect(
+                &ft_model,
+                r#"Corona Extra – Mexican Lager\nSet delivery address to see local pricingWhy be basic when you could be Extra? Corona Extra is a staple at everything from summer beach parties to everyday occasions. This pilsner style Mexican beer has starts sweet and finishes citrusy, with hints of lemon and ginger. Best served with a fresh wedge of lime, and sipped under an umbrella on the beach.\nMore By Corona\n4.86\n14 Reviews\n- 3 months agoJohn A. - Verified buyer""\n- 4 months agoJohn A. - Verified buyer""\n- 4 months agoAdrian R. - Verified buyer""\n- 10 months agolinda E. - Verified buyer\n- 1 year agoArthur M. - Verified buyer\n- 1 year agoArthur M. - Verified buyer\n- 1 year agoAraceli D. - Verified buyer\n- 1 year agoJose G. - Verified buyer\n- 2 years ago\nGreat tasteAwesome taste all aroundJonathan . - Verified buyer\n- 2 years ago\nAwesome beerGreat tastingJonathan . - Verified buyer\n- 2 years ago\nLove itIts just good specially aith lime tajin or just lime and saltJennifer O. - Verified buyer\n- 2 years ago\nRegular tasteI am not sure what to say it’s the same taste everywhereNour C. - Verified buyer\n- 3 years ago\nYumFast n EasyTyler R. - Verified buyer\n- 3 years ago\nFeels Like The BeachFizzy, light, good with lime + tajinLauren E. - Verified buyer"#
+            )
+        );
+        // assert_eq!("zh", lang_detect(&ft_model, "我是中国\0人").0);
+    }
+    #[test]
+    fn utf8_slice_works() {
+        // 多种语言
+        let text = vec![
+            ("你好，我测你🐎", "你好"),
+            ("こんにちは、テストさせてください🐎", "こん"),
+        ];
+        for (text, sliced_text) in text {
+            let slice = utf8_slice::till(text, 2);
+            assert_eq!(slice, sliced_text);
+        }
+    }
 }

@@ -3,6 +3,7 @@ use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use clap::{command, Arg};
 use indicatif::ParallelProgressIterator;
+use lazy_static::lazy_static;
 use parquet::arrow::AsyncArrowWriter;
 use parquet::file::properties::WriterProperties;
 use parquet::file::reader::SerializedFileReader;
@@ -10,7 +11,6 @@ use parquet::record::{Row, RowAccessor};
 use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
 use regex::Regex;
-use lazy_static::lazy_static;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -20,7 +20,6 @@ use tokio::fs::File;
 use walkdir::WalkDir;
 const INVALID_CHARS: [char; 6] = ['�', 'Ã', '©', '¤', '¶', '¼'];
 use zhconv::{zhconv, Variant};
-const ZH_VARIANTS: [&str; 2] = ["zho_Hans", "yue_Hant"];
 
 async fn write_todisk(
     file_path: PathBuf,
@@ -143,15 +142,17 @@ impl TryFrom<Row> for DataPoint {
             text: row.get_string(0)?.to_owned(),
             uri: row.get_string(1)?.to_owned(),
             domain: row.get_string(2)?.to_owned(),
-            info: row.get_string(4).map(|s| s.to_owned())  // 将 Option<&String> 转换为 Option<String>
-                    .unwrap_or_default(),  // 在这里提供默认值,
+            info: row
+                .get_string(4)
+                .map(|s| s.to_owned()) // 将 Option<&String> 转换为 Option<String>
+                .unwrap_or_default(), // 在这里提供默认值,
             language: row.get_string(5)?.to_owned(),
             langscore: row.get_double(6)? as f32,
             // 存在很多trafilatura解析不出date的情况
-           date: row.get_string(3)
-                    .map(|s| s.to_owned())  // 将 Option<&String> 转换为 Option<String>
-                    .unwrap_or_default(),  // 在这里提供默认值
-
+            date: row
+                .get_string(3)
+                .map(|s| s.to_owned()) // 将 Option<&String> 转换为 Option<String>
+                .unwrap_or_default(), // 在这里提供默认值
         })
     }
 }
@@ -209,8 +210,7 @@ fn validate_and_clean(mut dp: DataPoint) -> Option<DataPoint> {
             }
         }
     }
-    if ZH_VARIANTS.contains(&dp.language.as_str()) {
-        dp.language = String::from("zho_Hant");
+    if dp.language == "zh" {
         dp.text = zhconv(&dp.text, Variant::ZhCN);
     }
     dp.text = String::from(CLEAN_REGEX.replace_all(dp.text.as_str(), ""));

@@ -1,16 +1,20 @@
-use jieba_rs::Jieba;
 use once_cell::sync::{Lazy, OnceCell};
 use regex::Regex;
 static SPLIT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"[\p{P}\p{Z}]+").unwrap());
-static STOPWORDS: Lazy<Vec<String>> = Lazy::new(|| {
-    std::fs::read_to_string("resource/cn_stopwords.txt")
-        .expect("Unable to read stopwords file")
-        .split('\n')
-        .map(|x| x.to_string())
-        .collect()
-});
-pub static SCORE_MODEL: OnceCell<fasttext::FastText> = OnceCell::new();
-static JIEBA: Lazy<Jieba> = Lazy::new(|| Jieba::new());
+pub static LANGDET_MODEL: OnceCell<fasttext::FastText> = OnceCell::new();
+
+pub fn lang_detect(text: &str) -> (String, f32) {
+    let preds = LANGDET_MODEL
+        .get()
+        .unwrap()
+        .predict(text.replace("\0", "").as_str(), 1, 0f32)
+        .unwrap();
+    let first = preds.first();
+    match first {
+        Some(pred) => (pred.label.replace("__label__", ""), pred.prob),
+        None => ("unknown".to_string(), 0.0),
+    }
+}
 
 pub fn check_segments(input: &str) -> bool {
     let segments = input.split('\n');
@@ -45,68 +49,6 @@ pub fn consecutive_spans_detect(text: &str) -> bool {
     }
     true
 }
-// ? 这个text score 的结果没有问题，之所以oasis的分数是多段的，是因为他们使用bert只能512，拼接起来的，这里考虑到速度先用了fasttext
-pub fn text_score(text: &str, lang: &str) -> f32 {
-    if lang != "zho_Hant" {
-        return 0f32;
-    }
-    let mut segs = JIEBA.cut(text, false);
-    segs.retain(|x| x.len() > 1 && !STOPWORDS.contains(&x.to_string()));
-    let cut_text = segs.join(" ");
-    let preds = SCORE_MODEL
-        .get()
-        .unwrap()
-        .predict(cut_text.replace("\0", "").as_str(), 1, 0f32)
-        .unwrap();
-    let pred = preds.first();
-    if let Some(pred) = pred {
-        if pred.label == "__label__dirty" {
-            -pred.prob
-        } else {
-            pred.prob
-        }
-    } else {
-        0f32
-    }
-}
-
-// 不再使用闭包方式
-// pub fn get_text_scorer() -> Box<dyn Fn(&str, &str) -> f32+Send+Sync> {
-//     // let mut score_model = fasttext::FastText::new();
-//     // score_model
-//     //     .load_model("resource/models/oasis-fasttext/model.bin")
-//     //     .unwrap();
-
-//     // let stopwords: Vec<String> = std::fs::read_to_string("resource/cn_stopwords.txt")
-//     //     .expect("Unable to read stopwords file")
-//     //     .split('\n')
-//     //     .map(|x| x.to_string())
-//     //     .collect();
-//     // let jieba = Jieba::new();
-
-//     fn build(text: &str) -> String {
-//         let segs = JIEBA.cut(text, false);
-//         let segs: Vec<&str> = segs
-//             .into_iter()
-//             .filter(|x| x.len() > 1 && !STOPWORDS.contains(&x.to_string()))
-//             .collect();
-//         segs.join(" ")
-//     }
-
-//     Box::new(move |text: &str, lang:&str| {
-//         if lang!= "zho_Hant" {
-//             return 0f32;
-//         }
-//         let text = build(text);
-//         let preds = SCORE_MODEL.predict(text.as_str(), 1, 0.0).unwrap();
-//         let pred = preds.first().unwrap();
-//         if pred.label == "__label__dirty" {
-//             -pred.prob
-//         } else {
-//             pred.prob
-//         }
-//     })
-// }
 
 pub fn generate_ngrams(s: &str, n: usize, step: usize) -> Vec<&str> {
     if n > s.chars().count() || step > s.chars().count() {
@@ -167,20 +109,22 @@ mod test {
     #[allow(unused_imports)]
     use super::*;
     #[test]
+    fn test_lang_detect() {
+        let mut ft_model = fasttext::FastText::new();
+        ft_model
+            .load_model("resource/models/cc_net-language/nllb-model.bin")
+            .unwrap();
+        LANGDET_MODEL.set(ft_model).unwrap();
+        println!("{:?}", lang_detect(r#"Corona Extra – Mexican Lager\nSet delivery address to see local pricingWhy be basic when you could be Extra? Corona Extra is a staple at everything from summer beach parties to everyday occasions. This pilsner style Mexican beer has starts sweet and finishes citrusy, with hints of lemon and ginger. Best served with a fresh wedge of lime, and sipped under an umbrella on the beach.\nMore By Corona\n4.86\n14 Reviews\n- 3 months agoJohn A. - Verified buyer""\n- 4 months agoJohn A. - Verified buyer""\n- 4 months agoAdrian R. - Verified buyer""\n- 10 months agolinda E. - Verified buyer\n- 1 year agoArthur M. - Verified buyer\n- 1 year agoArthur M. - Verified buyer\n- 1 year agoAraceli D. - Verified buyer\n- 1 year agoJose G. - Verified buyer\n- 2 years ago\nGreat tasteAwesome taste all aroundJonathan . - Verified buyer\n- 2 years ago\nAwesome beerGreat tastingJonathan . - Verified buyer\n- 2 years ago\nLove itIts just good specially aith lime tajin or just lime and saltJennifer O. - Verified buyer\n- 2 years ago\nRegular tasteI am not sure what to say it’s the same taste everywhereNour C. - Verified buyer\n- 3 years ago\nYumFast n EasyTyler R. - Verified buyer\n- 3 years ago\nFeels Like The BeachFizzy, light, good with lime + tajinLauren E. - Verified buyer"#));
+    }
+    #[test]
     fn test_consecutive_spans_detect() {
         let text = "今天心情真不错，今天天气真好。";
         assert_eq!(consecutive_spans_detect(text), true);
         let text = "今天心情真不错!今天心情真不错.今天心情真不错，今天天气真好。\n今天心情真不错，今天天气真好。";
         assert_eq!(consecutive_spans_detect(text), false);
     }
-    #[test]
-    fn test_jieba() {
-        let text = "今天心情真不错";
-        let jieba = Jieba::new();
-        let segs = jieba.cut(text, false);
-        let segs: Vec<&str> = segs.into_iter().filter(|x| x.len() > 1).collect();
-        assert_eq!(segs, vec!["今天", "心情", "真不错"]);
-    }
+
     // #[test]
     // fn speed_test() {
     //     let data: Vec<Vec<String>> = vec![vec!["今天心情真不错".to_string(); 100]; 100];

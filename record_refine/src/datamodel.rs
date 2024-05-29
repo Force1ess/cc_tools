@@ -42,6 +42,7 @@ pub struct DataPoint {
     pub langscore: f32,
     pub textlen: usize,
     pub orig_textlen: usize,
+    pub orig_text: String,
 }
 impl From<RawDataPoint> for DataPoint {
     fn from(raw_dp: RawDataPoint) -> Self {
@@ -56,6 +57,7 @@ impl From<RawDataPoint> for DataPoint {
             langscore: raw_dp.langscore,
             textlen: len,
             orig_textlen: len,
+            orig_text: raw_dp.text,
         }
     }
 }
@@ -67,19 +69,21 @@ pub struct RefinedDataPoint {
     date: String,
     language: String,
     lang_score: f32,
-    quality_score: f32,
+    lang_after_dedup: String,
+    lang_after_dedup_score: f32,
     paralen: f32,
     text_ret_rate: f32,
     textlen: usize,
+    orig_text: String,
 }
-use crate::utils::{check_segments, text_score};
+use crate::utils::{check_segments, lang_detect};
 
 impl From<DataPoint> for RefinedDataPoint {
     fn from(dp: DataPoint) -> Self {
         let num_paras: usize = dp.paras.len();
         let text = dp.paras.join("\n"); // 把所有的段落连接成一个字符串
+        let (lang,score)= lang_detect(&text);
         Self {
-            quality_score: text_score(&text, &dp.language),
             paralen: (text.len() / num_paras) as f32,
             textlen: text.len(),
             text_ret_rate: (text.len() as f32) / dp.orig_textlen as f32,
@@ -89,6 +93,9 @@ impl From<DataPoint> for RefinedDataPoint {
             date: dp.date,
             language: dp.language,
             lang_score: dp.langscore,
+            orig_text: dp.orig_text,
+            lang_after_dedup:lang,
+            lang_after_dedup_score:score,
         }
     }
 }
@@ -105,7 +112,7 @@ pub struct RefineResult {
     pub domain: String,
     pub language: String,
     avg_lang_score: f32,
-    avg_quality_score: f32, //注意，为0代表的是没打分而不是分数真的为0，后续需要处理
+    avg_dedup_after_lang_score: f32, //注意，为0代表的是没打分而不是分数真的为0，后续需要处理
     avg_paralen: f32,
     avg_text_ret_rate: f32,
     len: usize,
@@ -148,11 +155,8 @@ impl RefineResult {
             let hash = datapoints.iter().map(|dp| simhash(&dp.text)).collect();
             self.avg_lang_score =
                 datapoints.iter().map(|dp| dp.lang_score).sum::<f32>() / self.len as f32;
-            self.avg_quality_score = datapoints.iter().map(|dp| dp.quality_score).sum::<f32>()
-                / datapoints
-                    .iter()
-                    .filter(|dp| dp.quality_score != 0f32)
-                    .count() as f32;
+            self.avg_dedup_after_lang_score= datapoints.iter().map(|dp| dp.lang_after_dedup_score).sum::<f32>()
+                / datapoints.len() as f32;
             self.avg_text_ret_rate = datapoints.iter().map(|dp| dp.text_ret_rate).sum::<f32>()
                 / datapoints.len() as f32;
             match sender.send((Some((datapoints, hash)), self)) {
@@ -265,7 +269,7 @@ fn save_domain_stats(domain_stats: &Vec<RefineResult>, file_count: usize) {
         Field::new("num_dedup_block", DataType::UInt64, true),
         Field::new("dedup_patterns", DataType::Utf8, true),
         Field::new("avg_lang_score", DataType::Float32, true),
-        Field::new("avg_quality_score", DataType::Float32, true),
+        Field::new("avg_dedup_after_lang_score", DataType::Float32, true),
         Field::new("avg_paralen", DataType::Float32, true),
         Field::new("avg_text_ret_rate", DataType::Float32, true),
         Field::new("len", DataType::UInt64, true),
@@ -285,7 +289,7 @@ fn save_domain_stats(domain_stats: &Vec<RefineResult>, file_count: usize) {
     let mut num_dedup_block_builder = UInt64Builder::with_capacity(domain_stats_len);
     let mut dedup_patterns_builder = StringBuilder::new();
     let mut avg_lang_score_builder = Float32Builder::with_capacity(domain_stats_len);
-    let mut avg_quality_score_builder = Float32Builder::with_capacity(domain_stats_len);
+    let mut avg_dedup_after_lang_score_builder = Float32Builder::with_capacity(domain_stats_len);
     let mut avg_paralen_builder = Float32Builder::with_capacity(domain_stats_len);
     let mut avg_text_ret_rate_builder = Float32Builder::with_capacity(domain_stats_len);
     let mut len_builder = UInt64Builder::with_capacity(domain_stats_len);
@@ -301,7 +305,7 @@ fn save_domain_stats(domain_stats: &Vec<RefineResult>, file_count: usize) {
         num_dedup_block_builder.append_value(ds.num_dedup_block as u64);
         dedup_patterns_builder.append_value(&ds.dedup_patterns.join(","));
         avg_lang_score_builder.append_value(ds.avg_lang_score);
-        avg_quality_score_builder.append_value(ds.avg_quality_score);
+        avg_dedup_after_lang_score_builder.append_value(ds.avg_dedup_after_lang_score);
         avg_paralen_builder.append_value(ds.avg_paralen);
         avg_text_ret_rate_builder.append_value(ds.avg_text_ret_rate);
         len_builder.append_value(ds.len as u64);
@@ -320,7 +324,7 @@ fn save_domain_stats(domain_stats: &Vec<RefineResult>, file_count: usize) {
             Arc::new(num_dedup_block_builder.finish()),
             Arc::new(dedup_patterns_builder.finish()),
             Arc::new(avg_lang_score_builder.finish()),
-            Arc::new(avg_quality_score_builder.finish()),
+            Arc::new(avg_dedup_after_lang_score_builder.finish()),
             Arc::new(avg_paralen_builder.finish()),
             Arc::new(avg_text_ret_rate_builder.finish()),
             Arc::new(len_builder.finish()),
@@ -348,11 +352,13 @@ fn save_domain_data(datapoints: &Vec<RefinedDataPoint>, file_count: usize) {
     let schema = Schema::new(vec![
         Field::new("text", DataType::Utf8, false),
         Field::new("domain", DataType::Utf8, false),
+        Field::new("orig_text", DataType::Utf8, false),
         Field::new("uri", DataType::Utf8, false),
         Field::new("date", DataType::Utf8, false),
         Field::new("language", DataType::Utf8, false),
         Field::new("lang_score", DataType::Float32, false),
-        Field::new("quality_score", DataType::Float32, false),
+        Field::new("lang_after_dedup", DataType::Utf8, false),
+        Field::new("dedup_after_lang_score", DataType::Float32, false),
         Field::new("paralen", DataType::Float32, false),
         Field::new("text_ret_rate", DataType::Float32, false),
         Field::new("textlen", DataType::UInt64, false),
@@ -362,11 +368,13 @@ fn save_domain_data(datapoints: &Vec<RefinedDataPoint>, file_count: usize) {
 
     let mut text_builder = StringBuilder::new();
     let mut domain_builder = StringBuilder::new();
+    let mut orig_text_builder = StringBuilder::new();
     let mut uri_builder = StringBuilder::new();
     let mut date_builder = StringBuilder::new();
     let mut language_builder = StringBuilder::new();
     let mut lang_score_builder = Float32Builder::new();
-    let mut quality_score_builder = Float32Builder::new();
+    let mut lang_after_dedup_builder = StringBuilder::new();
+    let mut dedup_after_lang_score_builder = Float32Builder::new();
     let mut paralen_builder = Float32Builder::new();
     let mut text_ret_rate_builder = Float32Builder::new();
     let mut textlen_builder = UInt64Builder::new();
@@ -374,11 +382,13 @@ fn save_domain_data(datapoints: &Vec<RefinedDataPoint>, file_count: usize) {
     for dp in datapoints {
         text_builder.append_value(&dp.text);
         domain_builder.append_value(&dp.domain);
+        orig_text_builder.append_value(&dp.orig_text);
         uri_builder.append_value(&dp.uri);
         date_builder.append_value(&dp.date);
         language_builder.append_value(&dp.language);
         lang_score_builder.append_value(dp.lang_score);
-        quality_score_builder.append_value(dp.quality_score);
+        dedup_after_lang_score_builder.append_value(dp.lang_after_dedup_score);
+        lang_after_dedup_builder.append_value(&dp.lang_after_dedup);
         paralen_builder.append_value(dp.paralen);
         text_ret_rate_builder.append_value(dp.text_ret_rate);
         textlen_builder.append_value(dp.textlen as u64);
@@ -389,11 +399,13 @@ fn save_domain_data(datapoints: &Vec<RefinedDataPoint>, file_count: usize) {
         vec![
             Arc::new(text_builder.finish()),
             Arc::new(domain_builder.finish()),
+            Arc::new(orig_text_builder.finish()),
             Arc::new(uri_builder.finish()),
             Arc::new(date_builder.finish()),
             Arc::new(language_builder.finish()),
             Arc::new(lang_score_builder.finish()),
-            Arc::new(quality_score_builder.finish()),
+            Arc::new(lang_after_dedup_builder.finish()),
+            Arc::new(dedup_after_lang_score_builder.finish()),
             Arc::new(paralen_builder.finish()),
             Arc::new(text_ret_rate_builder.finish()),
             Arc::new(textlen_builder.finish()),
